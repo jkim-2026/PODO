@@ -28,8 +28,11 @@ project/
 ├── CLAUDE.md
 ├── README.md
 ├── docs/
-│   └── work-plans/
-│       └── implementation_plan.md
+│   ├── README.md               # 문서 허브
+│   ├── backend.md              # 백엔드 계획
+│   ├── frontend.md             # 프론트엔드 계획
+│   ├── edge.md                 # 엣지 추론 계획
+│   └── training.md             # 모델 학습 계획
 ├── serving/
 │   └── api/                    # 백엔드 (FastAPI)
 │       ├── .venv/              # 가상환경
