@@ -1,11 +1,8 @@
 import aiosqlite
 import json
-import os
 from typing import List, Dict, Optional
 from schemas.schemas import DetectRequest, DefectInfo, StatsResponse
-
-# Database path
-DB_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "inspection.db")
+from config.settings import DB_PATH
 
 
 async def init_db():
@@ -13,7 +10,7 @@ async def init_db():
     Initialize database and create tables if they don't exist.
     Called on server startup.
     """
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("""
