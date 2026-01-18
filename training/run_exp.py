@@ -11,7 +11,17 @@ def main():
     args = parser.parse_args()
 
     # Load Config
-    with open(args.config, 'r') as f:
+    config_path = args.config
+    if not os.path.exists(config_path):
+        # Fallback: Try finding it relative to the script directory
+        # This handles cases where user runs from root like: python training/run_exp.py
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        candidate_path = os.path.join(script_dir, config_path)
+        if os.path.exists(candidate_path):
+            print(f"Config '{config_path}' not found in CWD. Found at '{candidate_path}'.")
+            config_path = candidate_path
+            
+    with open(config_path, 'r') as f:
         config = yaml.safe_load(f)
 
     print(f"Loaded config from {args.config}")
@@ -29,6 +39,21 @@ def main():
     from src.utils import set_seed
     set_seed(config.get('seed', 42))
     print(f"Random seed set to: {config.get('seed', 42)}")
+    
+    print(f"Random seed set to: {config.get('seed', 42)}")
+    
+    # --- Configure Ultralytics Settings ---
+    # Point 'weights_dir' to our pretrained_weights folder to avoid redundant downloads (e.g. AMP check)
+    from ultralytics import settings as ul_settings
+    # Use absolute path
+    # Weights dir is sibling to src, assuming run_exp.py is in training/
+    # If run_exp.py is in training/, os.getcwd() might be anything.
+    # Better to use script location base.
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    weights_dir = os.path.abspath(os.path.join(base_dir, "pretrained_weights"))
+    
+    ul_settings.update({'weights_dir': weights_dir})
+    print(f"Ultralytics weights_dir set to: {weights_dir}")
     
     # --- Dynamic Loading ---
     
@@ -68,25 +93,19 @@ def main():
     
     print(f"Random seed set to: {config.get('seed', 42)}")
     
-    # --- Configure Ultralytics Settings ---
-    # Point 'weights_dir' to our pretrained_weights folder to avoid redundant downloads (e.g. AMP check)
-    import ultralytics.settings as ul_settings
-    # Use absolute path
-    # Weights dir is sibling to src, assuming run_exp.py is in training/
-    # If run_exp.py is in training/, os.getcwd() might be anything.
-    # Better to use script location base.
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    weights_dir = os.path.abspath(os.path.join(base_dir, "pretrained_weights"))
-    
-    ul_settings.update({'weights_dir': weights_dir})
-    print(f"Ultralytics weights_dir set to: {weights_dir}")
 
     print(f"Using data: {data_yaml}")
     
     trainer = PCBTrainer(model, config)
     
-    # Initialize save_dir with a default in case training fails early
-    save_dir = os.path.join("runs", config['exp_name']) 
+    # Initialize save_dir (using 'project' from config if set, else relative 'runs')
+    # Force 'runs' to be in the same directory as this script (training/)
+    # This ensures consistency even if run from root.
+    runs_dir = os.path.join(base_dir, "runs")
+    config['project'] = runs_dir
+    print(f"Set save project directory to: {runs_dir}")
+    
+    save_dir = os.path.join(runs_dir, config['exp_name']) 
     
     try:
         # Train

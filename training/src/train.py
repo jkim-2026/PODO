@@ -91,6 +91,14 @@ class PCBTrainer:
             # Calculate YOLO Fitness: 0.1 * mAP50 + 0.9 * mAP50-95
             fitness = (0.1 * map50) + (0.9 * map50_95)
             
+            # Extract losses (from last batch of the epoch)
+            if hasattr(trainer, 'loss_items'):
+                box_loss = trainer.loss_items[0].item()
+                cls_loss = trainer.loss_items[1].item()
+                dfl_loss = trainer.loss_items[2].item()
+            else:
+                box_loss, cls_loss, dfl_loss = 0.0, 0.0, 0.0
+
             # Print with Fitness
             print(f"Epoch {epoch}/{total_epochs} | box: {box_loss:.4f} cls: {cls_loss:.4f} dfl: {dfl_loss:.4f} | mAP50: {map50:.4f} | Fitness: {fitness:.4f} | Time: {duration:.2f}s")
             
@@ -143,7 +151,7 @@ class PCBTrainer:
             device=self.config['device'],
             workers=self.config['workers'],
             
-            project='runs',
+            project=self.config.get('project', 'runs'),
             name=self.config['exp_name'], # Custom Experiment Name
             exist_ok=False, 
             

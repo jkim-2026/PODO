@@ -19,6 +19,12 @@ class PCBDataset:
         # Ensure label directory exists
         os.makedirs(self.labels_dir, exist_ok=True)
         
+        # Validation
+        if not os.path.exists(self.images_dir):
+            print(f"Warning: Images directory not found at {self.images_dir}")
+        if not os.path.exists(self.annotations_dir):
+            print(f"Warning: Annotations directory not found at {self.annotations_dir}")
+        
         self.classes = config['names']
         # Map lowercase name to ID to handle XML case differences
         self.class_map = {name.lower(): i for i, name in enumerate(self.classes)}
@@ -56,6 +62,13 @@ class PCBDataset:
     def convert_annotations(self):
         print("Converting XML annotations to YOLO format...")
         xml_files = glob.glob(os.path.join(self.annotations_dir, "*/*.xml"))
+        
+        if not xml_files:
+            print(f"No XML files found in {self.annotations_dir}. Checking for existing labels...")
+            # Fallback: if no XMLs, maybe we just have images and labels already?
+            # But the current pipeline relies on returning 'valid_images' from this process.
+            # If we want to support pre-converted data, we'd need to scan images directory directly.
+            pass
         
         valid_images = []
         
@@ -145,6 +158,13 @@ class PCBDataset:
         X = np.array(all_images)
         y = np.array(all_labels)
         
+        if len(X) == 0:
+            raise FileNotFoundError(
+                f"No valid images found in {self.data_path}. "
+                "Please ensure 'images' and 'Annotations' directories exist and contain data. "
+                f"Current search path: {os.path.abspath(self.data_path)}"
+            )
+
         # 2. Split and Save (Stratified)
         self._split_and_save(X, y)
         
