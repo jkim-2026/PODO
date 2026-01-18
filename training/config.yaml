@@ -1,7 +1,7 @@
 # PCB Defect Detection Configuration V2
 
 # Experiment
-exp_name: "baseline"
+exp_name: "baseline_v8s"
 wandb_project: "pcb_defect_detection" # Leave empty to disable
 seed: 42 # Random seed for reproducibility
 
@@ -9,7 +9,7 @@ seed: 42 # Random seed for reproducibility
 # Available Options: corresponds to python filename in src/datasets/
 dataset_module: "dataset"       # ['dataset', 'dataset_aug']
 # Available Options: corresponds to python filename in src/models/
-model_module: "yolov8"          # ['yolov8']
+model_module: "yolov8s"          # ['yolov8s']
 
 # Model Settings
 # model_module decides which weights to load internally (e.g. pretrained_weights/yolov8s.pt).
@@ -18,7 +18,7 @@ device: '0'        # Options: ['cpu', '0', '0,1', 'mps']
 workers: 8         # Number of dataloader workers
 
 # Data Config
-data_path: "/data/ephemeral/home/final_project/PCB_DATASET"
+data_path: "../PCB_DATASET"
 names: ['missing_hole', 'mouse_bite', 'open_circuit', 'short', 'spur', 'spurious_copper']
 
 # Split Strategy
@@ -60,8 +60,8 @@ hsv_h: 0.015       # Image HSV-Hue augmentation (fraction)
 hsv_s: 0.7         # Image HSV-Saturation augmentation (fraction)
 hsv_v: 0.4         # Image HSV-Value augmentation (fraction)
 degrees: 0.0       # Image rotation (+/- deg)
-translate: 0.1     # Image translation (+/- fraction)
-scale: 0.5         # Image scale (+/- gain)
+translate: 0.0     # Image translation (+/- fraction)
+scale: 0.0         # Image scale (+/- gain)
 shear: 0.0         # Image shear (+/- deg)
 perspective: 0.0   # Image perspective (+/- fraction), range 0-0.001
 flipud: 0.0        # Image flip up-down (probability)

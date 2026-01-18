@@ -15,6 +15,15 @@ def main():
         config = yaml.safe_load(f)
 
     print(f"Loaded config from {args.config}")
+
+    # --- Path Resolution (Relative -> Absolute) ---
+    # Resolve 'data_path' relative to this script's location (training/)
+    # This ensures portability regardless of where command is run.
+    if 'data_path' in config and not os.path.isabs(config['data_path']):
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        resolved_path = os.path.abspath(os.path.join(base_dir, config['data_path']))
+        print(f"Resolving relative data_path '{config['data_path']}' -> '{resolved_path}'")
+        config['data_path'] = resolved_path
     
     # --- Set Random Seed ---
     from src.utils import set_seed
@@ -63,7 +72,12 @@ def main():
     # Point 'weights_dir' to our pretrained_weights folder to avoid redundant downloads (e.g. AMP check)
     import ultralytics.settings as ul_settings
     # Use absolute path
-    weights_dir = os.path.abspath(os.path.join(os.getcwd(), "pretrained_weights"))
+    # Weights dir is sibling to src, assuming run_exp.py is in training/
+    # If run_exp.py is in training/, os.getcwd() might be anything.
+    # Better to use script location base.
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    weights_dir = os.path.abspath(os.path.join(base_dir, "pretrained_weights"))
+    
     ul_settings.update({'weights_dir': weights_dir})
     print(f"Ultralytics weights_dir set to: {weights_dir}")
 

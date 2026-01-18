@@ -182,5 +182,69 @@ class PCBTrainer:
             val=True       # Enable validation
         )
         
+        # Run Final Evaluation on Best Model
+        self.run_final_eval(data_yaml)
+        
         # Return the actual save directory (Path object) to handle auto-increment (e.g. baseline2)
         return self.model.trainer.save_dir
+
+    def run_final_eval(self, data_yaml):
+        """
+        Loads the best model and runs a final validation to print comprehensive metrics.
+        """
+        import os
+        from ultralytics import YOLO
+        
+        # Ensure trainer and save_dir exist
+        if not hasattr(self.model, 'trainer') or not self.model.trainer:
+            print("Trainer not initialized, skipping final eval.")
+            return
+
+        save_dir = self.model.trainer.save_dir
+        # YOLOv8 default save structure: weights/best.pt
+        best_model_path = os.path.join(save_dir, "weights", "best.pt")
+        
+        if not os.path.exists(best_model_path):
+            print(f"Warning: Best model not found at {best_model_path}. Skipping final evaluation.")
+            return
+
+        print(f"\n{'='*20} FINAL EVALUATION (Best Model) {'='*20}")
+        print(f"Loading best model from: {best_model_path}")
+        
+        try:
+            # Load best model
+            best_model = YOLO(best_model_path)
+            
+            # Run validation
+            # verbose=True ensures standard YOLO table is also printed if we miss something
+            print("Running validation on best model...")
+            metrics = best_model.val(data=data_yaml, split='val', verbose=False)
+            
+            print("\n[Best Model Class-wise Performance]")
+            print(f"{'Class':<20} | {'mAP50':<10} | {'mAP50-95':<10}")
+            print("-" * 50)
+            
+            names = metrics.names
+            if hasattr(metrics, 'ap_class_index'):
+                for i, cls_idx in enumerate(metrics.ap_class_index):
+                    cls_idx = int(cls_idx)
+                    name = names.get(cls_idx, str(cls_idx))
+                    
+                    # metrics.class_result(i) -> (p, r, map50, map50-95)
+                    # This relies on Ultralytics implementation details
+                    try:
+                        res = metrics.class_result(i)
+                        map50 = res[2]
+                        map50_95 = res[3]
+                        print(f"{name:<20} | {map50:.4f}     | {map50_95:.4f}")
+                    except Exception:
+                        # Fallback if structure differs
+                        print(f"{name:<20} | N/A        | N/A")
+                        
+            print("-" * 50)
+            print(f"Overall mAP50: {metrics.box.map50:.4f}")
+            print(f"Overall mAP50-95: {metrics.box.map:.4f}")
+            print(f"{'='*50}\n")
+            
+        except Exception as e:
+            print(f"Error during final evaluation: {e}")
