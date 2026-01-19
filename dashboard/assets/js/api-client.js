@@ -215,19 +215,16 @@ const DashboardUpdater = {
         const stats = await ApiClient.getStats();
         if (stats) {
             // Update Cards (Real-time)
-            // Backend sends: total_inspections, normal_count, defect_items, total_defects
+            // Backend sends: total_inspections, normal_count, defect_items, total_defects, defect_rate
             document.getElementById("total-count").innerText = stats.total_inspections || 0;
             document.getElementById("normal-count").innerText = stats.normal_count || 0;
             document.getElementById("defect-count").innerText = stats.defect_items || 0;
 
-            // Update Trend Chart (Total Inspections or Total Defects? Using Total Inspections for activity)
-            // Or usually "Total Defects"? The label says "Total Defects".
-            // If label is "Total Defects", we should use stats.total_defects.
-            // Let's check trend label... it says "Total Defects" in initCharts.
-            // But previous code passed stats.total_count.
-            // If the user wants "Defect Trends", it should be defects count.
-            // But usually this chart shows Hourly Output if it's "Activity".
-            // Let's stick to what's labeled: "Total Defects" -> stats.total_defects.
+            // Format defect rate logic removed as requested by user (reverted to Model Used)
+            // const rate = stats.defect_rate !== undefined ? stats.defect_rate.toFixed(2) : "0.00";
+            // document.getElementById("defect-rate").innerText = `${rate}%`;
+
+            // Update Trend Chart (Total Defects)
             this.updateTrendChart(stats.total_defects || 0, forceChartUpdate);
         }
 
@@ -236,14 +233,17 @@ const DashboardUpdater = {
             this.updateTypesChart(defects);
         }
 
-        if (stats && stats.recent_defects) {
-            this.updateConfidenceChart(stats.recent_defects);
-        } else {
-            const latest = await ApiClient.getLatest(10);
-            if (latest) {
-                const defectsOnly = latest.filter(item => item.result === 'defect');
-                this.updateConfidenceChart(defectsOnly.length > 0 ? defectsOnly : latest);
-            }
+        // Always fetch latest logs as stats.recent_defects is deprecated in new API
+        const latest = await ApiClient.getLatest(10);
+        if (latest) {
+            // Filter only defects for confidence chart, or show latest if no defects found?
+            // Usually we want to track confidence of actual defects.
+            const defectsOnly = latest.filter(item => item.result === 'defect');
+            // If there are no recent defects, show generic latest items (which might be normal) 
+            // or just show empty if we strictly want Defects.
+            // Let's fallback to latest if defectsOnly is empty but typically we want confidence of defects.
+            // If latest has no defects, defectsOnly is empty. 
+            this.updateConfidenceChart(defectsOnly.length > 0 ? defectsOnly : []);
         }
     },
 
