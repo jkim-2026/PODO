@@ -176,62 +176,72 @@ class QATTrainer(PCBTrainer):
         # 부모 클래스의 train 호출 (PCBTrainer.train)
         save_dir = super().train(data_yaml)
 
-        # ONNX Export
+        # ONNX Export (학습 직후, 메모리 상의 모델 사용)
         if save_dir:
-            self._export_onnx(save_dir, data_yaml)
+            self._export_onnx_from_memory(save_dir, data_yaml)
 
         return save_dir
 
-    def _export_onnx(self, save_dir: Path, data_yaml: str) -> None:
+    def _export_onnx_from_memory(self, save_dir: Path, data_yaml: str) -> None:
         """
-        QAT 학습 후 ONNX export.
+        메모리 상의 QAT 모델을 직접 ONNX export.
+
+        학습 직후 메모리에 있는 self.model.model을 사용하여 QAT 정보를 보존합니다.
 
         Args:
             save_dir: 학습 결과 저장 디렉토리
             data_yaml: 데이터셋 yaml 경로
         """
-        print(f"\n{'='*20} ONNX Export {'='*20}")
+        print(f"\n{'='*20} ONNX Export (from memory) {'='*20}")
 
-        best_model_path = os.path.join(save_dir, "weights", "best.pt")
-        if not os.path.exists(best_model_path):
-            print(f"[QAT] best.pt를 찾을 수 없음: {best_model_path}")
+        onnx_path = os.path.join(save_dir, "weights", "best_qat.onnx")
+
+        if not self.qat_enabled:
+            print("[QAT] QAT 비활성화됨. 일반 ONNX export 건너뜀.")
             return
 
         try:
-            # best.pt 로드
-            best_model = YOLO(best_model_path)
+            # 메모리 상의 모델 사용 (QAT 정보 보존)
+            from src.quantization import export_qat_to_onnx
 
-            # ONNX export 경로
-            onnx_path = os.path.join(save_dir, "weights", "best_qat.onnx")
+            print("[QAT] 메모리 상의 QAT 모델을 ONNX로 export 중...")
+            print(f"[QAT] TensorQuantizer 확인...")
 
-            if self.qat_enabled:
-                # QAT ONNX export (Q/DQ 노드 포함)
-                from src.quantization import export_qat_to_onnx
-                export_qat_to_onnx(
-                    model=best_model.model,
-                    output_path=onnx_path,
-                    config=self.config,
-                    img_size=self.config.get('img_size', 640),
-                )
-            else:
-                # 일반 ONNX export
-                best_model.export(
-                    format='onnx',
-                    imgsz=self.config.get('img_size', 640),
-                    simplify=True,
-                )
-                # 파일명 변경
-                default_onnx = best_model_path.replace('.pt', '.onnx')
-                if os.path.exists(default_onnx):
-                    os.rename(default_onnx, onnx_path)
+            # TensorQuantizer 개수 확인
+            from pytorch_quantization import nn as quant_nn
+            quantizer_count = sum(1 for m in self.model.model.modules()
+                                 if isinstance(m, quant_nn.TensorQuantizer))
+            print(f"[QAT] TensorQuantizer 개수: {quantizer_count}")
+
+            if quantizer_count == 0:
+                print("[QAT] ⚠️ 경고: TensorQuantizer가 없습니다. QAT가 적용되지 않았을 수 있습니다.")
+
+            export_qat_to_onnx(
+                model=self.model.model,  # 메모리 상의 모델 직접 사용
+                output_path=onnx_path,
+                config=self.config,
+                img_size=self.config.get('img_size', 640),
+            )
 
             if os.path.exists(onnx_path):
-                print(f"[QAT] ONNX 저장 완료: {onnx_path}")
+                print(f"[QAT] ✅ ONNX 저장 완료: {onnx_path}")
 
         except Exception as e:
-            print(f"[QAT] ONNX export 실패: {e}")
+            print(f"[QAT] ❌ ONNX export 실패: {e}")
             import traceback
             traceback.print_exc()
+
+    def _export_onnx(self, save_dir: Path, data_yaml: str) -> None:
+        """
+        QAT 학습 후 ONNX export (레거시 메서드, 더 이상 사용 안 함).
+
+        Args:
+            save_dir: 학습 결과 저장 디렉토리
+            data_yaml: 데이터셋 yaml 경로
+        """
+        # 이 메서드는 더 이상 사용하지 않습니다.
+        # _export_onnx_from_memory를 대신 사용합니다.
+        pass
 
     def run_full_pipeline(self, data_yaml: str) -> Optional[Path]:
         """
