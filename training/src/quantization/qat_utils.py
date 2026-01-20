@@ -124,8 +124,101 @@ def prepare_model_for_qat(model: nn.Module, config: Dict[str, Any]) -> nn.Module
     return model
 
 
-def disable_detect_head_quantization(model: nn.Module) -> None:
+def replace_conv_with_quantconv(model: nn.Module, config: Dict[str, Any]) -> nn.Module:
+    """
+    이미 로드된 모델의 Conv2d를 QuantConv2d로 수동 교체.
 
+    Ultralytics YOLO는 체크포인트에서 모델을 복원할 때 이미 만들어진 모듈을 사용하므로
+    quant_modules.initialize()가 효과가 없습니다. 이 함수는 로드된 모델의
+    Conv2d를 직접 QuantConv2d로 교체합니다.
+
+    Args:
+        model: 이미 로드된 PyTorch 모델
+        config: QAT 설정
+
+    Returns:
+        Conv2d가 QuantConv2d로 교체된 모델
+    """
+    try:
+        from pytorch_quantization import nn as quant_nn
+        from pytorch_quantization.tensor_quant import QuantDescriptor
+    except ImportError:
+        raise ImportError("pytorch-quantization이 설치되지 않았습니다.")
+
+    qat_config = config.get('qat', {})
+    quant_config = qat_config.get('quantization', {})
+    calibration_config = qat_config.get('calibration', {})
+
+    num_bits = quant_config.get('num_bits', 8)
+    weight_per_channel = quant_config.get('weight_per_channel', True)
+    calib_method = calibration_config.get('method', 'histogram')
+
+    # QuantDescriptor 설정
+    if calib_method == 'histogram':
+        input_desc = QuantDescriptor(num_bits=num_bits, calib_method='histogram')
+    else:
+        input_desc = QuantDescriptor(num_bits=num_bits, calib_method='max')
+
+    if weight_per_channel:
+        weight_desc = QuantDescriptor(num_bits=num_bits, axis=(0,))
+    else:
+        weight_desc = QuantDescriptor(num_bits=num_bits)
+
+    replaced_count = 0
+
+    # 모든 모듈을 순회하며 Conv2d를 QuantConv2d로 교체
+    def replace_module(parent: nn.Module, name: str, module: nn.Module):
+        nonlocal replaced_count
+
+        # 이미 QuantConv2d인 경우 스킵
+        if isinstance(module, quant_nn.QuantConv2d):
+            return
+
+        # Conv2d인 경우 QuantConv2d로 교체
+        if isinstance(module, nn.Conv2d):
+            # QuantConv2d 생성 (동일한 파라미터)
+            quant_conv = quant_nn.QuantConv2d(
+                in_channels=module.in_channels,
+                out_channels=module.out_channels,
+                kernel_size=module.kernel_size,
+                stride=module.stride,
+                padding=module.padding,
+                dilation=module.dilation,
+                groups=module.groups,
+                bias=module.bias is not None,
+                padding_mode=module.padding_mode,
+                quant_desc_input=input_desc,
+                quant_desc_weight=weight_desc,
+            )
+
+            # 기존 가중치 복사
+            quant_conv.weight.data.copy_(module.weight.data)
+            if module.bias is not None:
+                quant_conv.bias.data.copy_(module.bias.data)
+
+            # 부모 모듈에서 교체
+            setattr(parent, name, quant_conv)
+            replaced_count += 1
+
+    # 재귀적으로 모든 모듈 순회
+    def recursive_replace(parent: nn.Module):
+        for name, child in parent.named_children():
+            # 먼저 자식의 자식들을 처리
+            recursive_replace(child)
+            # 그 다음 현재 자식을 교체
+            replace_module(parent, name, child)
+
+    recursive_replace(model)
+
+    print(f"[QAT] Conv2d → QuantConv2d 수동 교체 완료:")
+    print(f"  - 교체된 레이어 수: {replaced_count}")
+    print(f"  - Bits: {num_bits}")
+    print(f"  - Weight per-channel: {weight_per_channel}")
+
+    return model
+
+
+def disable_detect_head_quantization(model: nn.Module) -> None:
     """
     Detect Head의 마지막 레이어 양자화 비활성화.
 

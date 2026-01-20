@@ -41,24 +41,32 @@ def get_model(config: Dict[str, Any]) -> YOLO:
 
     print(f"[QAT] Pre-trained 모델 로드: {pretrained_path}")
 
-    # QAT 초기화 (모델 로드 전에 수행)
-    # pytorch-quantization이 설치된 경우에만 초기화
-    _initialize_qat_if_available(config)
-
-    # 모델 로드
+    # 모델 로드 (먼저 일반 모델로 로드)
     model = YOLO(pretrained_path)
 
     print(f"[QAT] 모델 로드 완료")
     print(f"  - Classes: {len(model.names)}")
     print(f"  - Names: {list(model.names.values())}")
 
-    # Detect Head 양자화 비활성화 (정확도 확보)
+    # Conv2d → QuantConv2d 수동 교체 (Ultralytics YOLO는 이미 만들어진 모델을 로드하므로
+    # quant_modules.initialize()가 효과 없음. 따라서 수동으로 교체해야 함)
     try:
-        from src.quantization.qat_utils import disable_detect_head_quantization
+        from src.quantization import replace_conv_with_quantconv, disable_detect_head_quantization
+
+        # 수동으로 Conv2d를 QuantConv2d로 교체
+        replace_conv_with_quantconv(model.model, config)
+
+        # Detect Head 양자화 비활성화 (정확도 확보)
         disable_detect_head_quantization(model.model)
-        print(f"[QAT] Detect Head 양자화 비활성화 완료")
-    except ImportError:
-        pass
+
+    except ImportError as e:
+        print(f"[QAT] 경고: pytorch-quantization을 찾을 수 없습니다.")
+        print(f"  설치: pip install pytorch-quantization --extra-index-url https://pypi.ngc.nvidia.com")
+        print(f"  QAT 없이 일반 fine-tuning으로 진행합니다.")
+    except Exception as e:
+        print(f"[QAT] 양자화 변환 오류: {e}")
+        import traceback
+        traceback.print_exc()
 
     return model
 
