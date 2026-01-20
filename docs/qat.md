@@ -67,8 +67,9 @@ training/
 ssh pcb-defect
 cd ~/pro-cv-finalproject-cv-01/training
 
-# 2. 의존성 설치 (QAT 포함)
-uv sync --extra qat
+# 2. 의존성 설치
+uv sync
+uv pip install pytorch-quantization==2.1.2 --extra-index-url https://pypi.ngc.nvidia.com
 
 # 3. (선택) 양자화 레이어 적용 검증
 uv run python verify_qat.py
@@ -90,31 +91,16 @@ trtexec --onnx=best_qat.onnx --saveEngine=yolov8s_int8.engine --int8
 
 ### 1. 의존성 설치
 
-**IMPORTANT**: `pytorch-quantization`은 NVIDIA NGC 저장소에서만 제공되며, **NVIDIA GPU가 있는 환경에서만** 설치 가능합니다.
+**IMPORTANT**: `pytorch-quantization`은 NVIDIA NGC 저장소에서만 제공되며, **NVIDIA GPU가 있는 환경에서만** 설치 가능합니다. 자동 설치 시 빌드 오류가 발생할 수 있으므로 **수동 설치를 권장**합니다.
 
-**방법 A: optional-dependencies 사용 (권장)**
+**수동 설치 (권장)**
 ```bash
 cd training
-uv sync --extra qat
-```
-
-**방법 B: 수동 설치**
-```bash
-cd training
-uv pip install pytorch-quantization --extra-index-url https://pypi.ngc.nvidia.com
 uv sync
+uv pip install pytorch-quantization==2.1.2 --extra-index-url https://pypi.ngc.nvidia.com
 ```
 
-`pyproject.toml` 설정:
-```toml
-[project.optional-dependencies]
-qat = ["pytorch-quantization>=2.1.3"]
-
-[[tool.uv.index]]
-name = "nvidia"
-url = "https://pypi.ngc.nvidia.com"
-explicit = true
-```
+**주의**: `uv sync --extra qat` 방식은 빌드 오류가 발생할 수 있으므로 사용하지 마세요.
 
 **설치 확인**:
 ```bash

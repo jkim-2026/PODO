@@ -21,10 +21,12 @@ dependencies = [
     "onnxsim>=0.4.33",
 ]
 
-[project.optional-dependencies]
-qat = [
-    "pytorch-quantization>=2.1.3",
-]
+# [project.optional-dependencies]
+# NOTE: pytorch-quantization 자동 설치가 빌드 오류를 일으킬 수 있음
+# 수동 설치 권장: uv pip install pytorch-quantization==2.1.2 --extra-index-url https://pypi.ngc.nvidia.com
+# qat = [
+#     "pytorch-quantization>=2.1.3",
+# ]
 
 [[tool.uv.index]]
 name = "nvidia"
