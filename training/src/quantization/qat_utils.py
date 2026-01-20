@@ -336,17 +336,19 @@ def _compute_amax(model: nn.Module, method: str = 'histogram') -> None:
     """Calibration 통계로부터 amax (activation max) 계산"""
     try:
         from pytorch_quantization import nn as quant_nn
+        from pytorch_quantization.calib import HistogramCalibrator
     except ImportError:
         return
 
     for name, module in model.named_modules():
         if isinstance(module, quant_nn.TensorQuantizer):
             if module._calibrator is not None:
-                if method == 'histogram':
-                    # Entropy 기반 최적 범위 계산
+                # Calibrator 타입에 따라 다르게 처리
+                # HistogramCalibrator만 method='entropy' 지원
+                if isinstance(module._calibrator, HistogramCalibrator):
                     module.load_calib_amax(method='entropy')
                 else:
-                    # Max 값 사용
+                    # MaxCalibrator는 method 인자를 지원하지 않음
                     module.load_calib_amax()
 
                 # Calibrator 메모리 해제

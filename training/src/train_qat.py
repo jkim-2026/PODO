@@ -143,7 +143,7 @@ class QATTrainer(PCBTrainer):
             dataset,
             batch_size=batch_size,
             shuffle=True,
-            num_workers=min(self.config.get('workers', 4), 4),
+            num_workers=self.config.get('workers', 8),
             pin_memory=True,
             collate_fn=dataset.collate_fn,
         )
@@ -162,7 +162,7 @@ class QATTrainer(PCBTrainer):
         Returns:
             학습 결과 저장 디렉토리
         """
-        print(f"\n{'='*20} QAT Fine-tuning {'='*20}")
+        print(f"\n{'='*20} QAT Training {'='*20}")
 
         # 양자화 활성화
         if self.qat_enabled:
