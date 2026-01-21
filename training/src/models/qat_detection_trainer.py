@@ -111,6 +111,10 @@ class QATDetectionTrainer(DetectionTrainer):
         부모 클래스의 get_model()을 호출한 후,
         checkpoint에 저장된 TensorQuantizer 상태를 복원합니다.
 
+        **중요**: Validation 메트릭 0 문제 해결
+        - Conv2d로 로드된 모델을 QuantConv2d로 재구성
+        - 그 후 quantizer_state 복원
+
         Args:
             cfg: 모델 config
             weights: 가중치 경로
@@ -127,27 +131,58 @@ class QATDetectionTrainer(DetectionTrainer):
                 checkpoint = torch.load(weights, map_location='cpu', weights_only=False)
 
                 if 'quantizer_state' in checkpoint:
-                    from src.quantization.qat_utils import restore_quantizer_state
+                    print(f"\n[QAT] QAT Checkpoint 감지: {Path(weights).name}")
+                    print(f"[QAT] Conv2d → QuantConv2d 재구성 시작...")
 
-                    restore_quantizer_state(model, checkpoint['quantizer_state'])
-                    print(f"[QAT] ✅ TensorQuantizer 복원 완료: {checkpoint['quantizer_state']['quantizer_count']}개")
+                    # 1단계: Conv2d → QuantConv2d 교체
+                    # checkpoint의 quantizer_state에서 설정 추출
+                    quantizer_state = checkpoint['quantizer_state']
+
+                    # 첫 번째 quantizer에서 num_bits 추출 (없으면 기본값 8)
+                    num_bits = 8
+                    if 'quantizers' in quantizer_state and quantizer_state['quantizers']:
+                        first_quantizer = next(iter(quantizer_state['quantizers'].values()))
+                        num_bits = first_quantizer.get('num_bits', 8)
+
+                    # QAT config 생성 (기본값 사용)
+                    qat_config = {
+                        'qat': {
+                            'quantization': {
+                                'num_bits': num_bits,
+                                'weight_per_channel': True,
+                            },
+                            'calibration': {
+                                'method': 'histogram'
+                            }
+                        }
+                    }
+
+                    from src.quantization.qat_utils import replace_conv_with_quantconv, restore_quantizer_state
+
+                    # Conv2d → QuantConv2d 교체
+                    model = replace_conv_with_quantconv(model, qat_config)
+
+                    # 2단계: TensorQuantizer amax/scale 복원
+                    restore_quantizer_state(model, quantizer_state)
+                    print(f"[QAT] ✅ QAT 모델 복원 완료: {quantizer_state['quantizer_count']}개 quantizer")
                 else:
-                    print(f"[QAT] ⚠️ Checkpoint에 quantizer_state 없음 (일반 checkpoint)")
+                    print(f"[QAT] 일반 checkpoint (quantizer_state 없음)")
             except Exception as e:
-                print(f"[QAT] ⚠️ TensorQuantizer 복원 실패: {e}")
+                print(f"[QAT] ⚠️ QAT 모델 복원 실패: {e}")
+                import traceback
+                traceback.print_exc()
 
-        # TensorQuantizer 개수 확인
+        # TensorQuantizer 개수 확인 (디버깅)
         try:
             from pytorch_quantization import nn as quant_nn
             quantizer_count = sum(1 for m in model.modules()
                                  if isinstance(m, quant_nn.TensorQuantizer))
-            print(f"[QAT] 모델 로드 완료 - TensorQuantizer: {quantizer_count}개")
+            print(f"[QAT] 최종 모델 - TensorQuantizer: {quantizer_count}개")
 
             if quantizer_count == 0:
                 print(f"[QAT] ⚠️ 경고: TensorQuantizer가 없습니다!")
-                print(f"  모델이 QAT용으로 준비되지 않았을 수 있습니다.")
             else:
-                print(f"[QAT] ✅ TensorQuantizer 확인됨!")
+                print(f"[QAT] ✅ TensorQuantizer 활성화됨\n")
         except ImportError:
             pass
 

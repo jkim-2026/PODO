@@ -2,12 +2,17 @@
 QAT 모델 ONNX Export
 
 TensorRT INT8 변환을 위한 Q/DQ 노드 포함 ONNX 파일 생성.
+
+수정 이력:
+- torch.jit.trace 기반 export 추가 (data-dependent expression 문제 해결)
+- Static scale 고정 기능 추가
 """
 
 import torch
 import torch.nn as nn
 import os
 from typing import Dict, Any, Optional
+import warnings
 
 
 def export_qat_to_onnx(
@@ -19,9 +24,13 @@ def export_qat_to_onnx(
     device: str = 'cuda'
 ) -> str:
     """
-    QAT 모델을 ONNX로 export.
+    QAT 모델을 ONNX로 export (개선된 버전).
 
-    Q/DQ (Quantize/Dequantize) 노드를 포함하여 TensorRT INT8 변환에 최적화됩니다.
+    여러 방법을 순차적으로 시도하여 data-dependent expression 오류를 해결합니다:
+    1. torch.jit.trace 기반 export (권장)
+    2. torch.onnx.export with static scale
+    3. torch.onnx.export (기본)
+    4. Ultralytics 내장 export (fallback)
 
     Args:
         model: QAT 학습된 모델
@@ -43,86 +52,81 @@ def export_qat_to_onnx(
     qat_config = config.get('qat', {})
     export_config = qat_config.get('export', {})
 
-    # Opset 13으로 낮춤 (더 안정적, TensorRT 호환성 향상)
     opset = export_config.get('opset', 13)
     simplify = export_config.get('simplify', True)
     dynamic_batch = export_config.get('dynamic_batch', False)
+    use_jit_trace = export_config.get('use_jit_trace', True)  # 기본: JIT trace 사용
 
     print(f"[QAT] ONNX Export 시작...")
     print(f"  - Output: {output_path}")
     print(f"  - Opset: {opset}")
+    print(f"  - Use JIT trace: {use_jit_trace}")
     print(f"  - Simplify: {simplify}")
     print(f"  - Dynamic batch: {dynamic_batch}")
 
     model.eval()
     model.to(device)
 
-    # Q/DQ 노드를 ONNX에 포함시키기 위한 설정
-    quant_nn.TensorQuantizer.use_fb_fake_quant = True
-
-    # TensorQuantizer를 inference mode로 설정 (calibration 비활성화)
+    # TensorQuantizer를 inference mode로 설정
     print("[QAT] TensorQuantizer를 inference mode로 설정 중...")
-    for name, module in model.named_modules():
-        if isinstance(module, quant_nn.TensorQuantizer):
-            # Calibration 비활성화 -> Inference 활성화
-            if module._calibrator is not None:
-                module.disable_calib()
-            module.enable_quant()
-            module.enable()
+    _prepare_model_for_export(model)
     print("[QAT] ✅ TensorQuantizer inference mode 설정 완료")
 
     # 더미 입력 생성
     dummy_input = torch.randn(batch_size, 3, img_size, img_size, device=device)
 
-    # Dynamic axes 설정 (배치 크기 동적)
-    if dynamic_batch:
-        dynamic_axes = {
-            'images': {0: 'batch_size'},
-            'output0': {0: 'batch_size'},
-        }
-    else:
-        dynamic_axes = None
+    # 방법 1: torch.jit.trace 사용 (data-dependent 문제 해결)
+    if use_jit_trace:
+        try:
+            print("\n[방법 1] torch.jit.trace 기반 export 시도...")
+            result = _export_with_jit_trace(
+                model, dummy_input, output_path, opset, dynamic_batch
+            )
+            if result:
+                # 검증 및 후처리
+                if simplify:
+                    output_path = _simplify_onnx(output_path)
+                _verify_qdq_nodes(output_path)
+                quant_nn.TensorQuantizer.use_fb_fake_quant = False
+                return output_path
+        except Exception as e:
+            print(f"[QAT] ❌ JIT trace 실패: {e}")
 
-    # ONNX Export
+    # 방법 2: Static scale 고정 후 export
     try:
-        torch.onnx.export(
-            model,
-            dummy_input,
-            output_path,
-            opset_version=opset,
-            input_names=['images'],
-            output_names=['output0'],
-            dynamic_axes=dynamic_axes,
-            do_constant_folding=True,
-            verbose=False,
+        print("\n[방법 2] Static scale 고정 후 export 시도...")
+        freeze_quantizer_scales(model)
+        result = _export_with_torch_onnx(
+            model, dummy_input, output_path, opset, dynamic_batch
         )
-        print(f"[QAT] ✅ ONNX 기본 export 완료: {output_path}")
+        if result:
+            if simplify:
+                output_path = _simplify_onnx(output_path)
+            _verify_qdq_nodes(output_path)
+            quant_nn.TensorQuantizer.use_fb_fake_quant = False
+            return output_path
     except Exception as e:
-        print(f"[QAT] ❌ torch.onnx.export 실패: {e}")
-        print(f"  Fallback: ultralytics 내장 export 시도...")
-        # Fallback: ultralytics 내장 export 사용
-        return _export_via_ultralytics(model, output_path, config, img_size)
+        print(f"[QAT] ❌ Static scale export 실패: {e}")
 
-    # ONNX 모델 검증
+    # 방법 3: 기본 torch.onnx.export
     try:
-        import onnx
-        onnx_model = onnx.load(output_path)
-        onnx.checker.check_model(onnx_model)
-        print("[QAT] ONNX 모델 검증 통과")
+        print("\n[방법 3] 기본 torch.onnx.export 시도...")
+        result = _export_with_torch_onnx(
+            model, dummy_input, output_path, opset, dynamic_batch
+        )
+        if result:
+            if simplify:
+                output_path = _simplify_onnx(output_path)
+            _verify_qdq_nodes(output_path)
+            quant_nn.TensorQuantizer.use_fb_fake_quant = False
+            return output_path
     except Exception as e:
-        print(f"[QAT] ONNX 검증 경고: {e}")
+        print(f"[QAT] ❌ 기본 export 실패: {e}")
 
-    # ONNX Simplifier 적용
-    if simplify:
-        output_path = _simplify_onnx(output_path)
-
-    # Q/DQ 노드 확인
-    _verify_qdq_nodes(output_path)
-
-    # 설정 복원
+    # 방법 4: Ultralytics fallback
+    print("\n[방법 4] Ultralytics 내장 export 시도...")
     quant_nn.TensorQuantizer.use_fb_fake_quant = False
-
-    return output_path
+    return _export_via_ultralytics(model, output_path, config, img_size)
 
 
 def _export_via_ultralytics(
@@ -285,3 +289,192 @@ def validate_onnx_output(
     except Exception as e:
         print(f"[QAT] ONNX 출력 검증 실패: {e}")
         return False
+
+
+# ============================================================================
+# 새로운 Export 방법들 (data-dependent expression 문제 해결)
+# ============================================================================
+
+def _prepare_model_for_export(model: nn.Module) -> None:
+    """
+    모델을 ONNX export용으로 준비.
+
+    TensorQuantizer를 inference mode로 설정합니다.
+    """
+    try:
+        from pytorch_quantization import nn as quant_nn
+    except ImportError:
+        return
+
+    # Q/DQ 노드를 ONNX에 포함시키기 위한 설정
+    quant_nn.TensorQuantizer.use_fb_fake_quant = True
+
+    # TensorQuantizer를 inference mode로 설정
+    for name, module in model.named_modules():
+        if isinstance(module, quant_nn.TensorQuantizer):
+            # Calibration 비활성화
+            if module._calibrator is not None:
+                module.disable_calib()
+            # Quantization 활성화
+            module.enable_quant()
+            module.enable()
+
+
+def _export_with_jit_trace(
+    model: nn.Module,
+    dummy_input: torch.Tensor,
+    output_path: str,
+    opset: int,
+    dynamic_batch: bool
+) -> bool:
+    """
+    torch.jit.trace를 사용한 ONNX export.
+
+    torch.export와 달리 data-dependent 연산을 허용합니다.
+    실제 데이터를 실행하면서 그래프를 기록하기 때문에 동적 연산도 처리 가능합니다.
+
+    Args:
+        model: QAT 모델
+        dummy_input: 더미 입력
+        output_path: 출력 경로
+        opset: ONNX opset 버전
+        dynamic_batch: 동적 배치 사용 여부
+
+    Returns:
+        성공 여부
+    """
+    try:
+        print("  - JIT tracing 시작...")
+
+        # Dynamic axes 설정
+        if dynamic_batch:
+            dynamic_axes = {
+                'images': {0: 'batch_size'},
+                'output0': {0: 'batch_size'},
+            }
+        else:
+            dynamic_axes = None
+
+        # JIT trace로 그래프 생성
+        with torch.no_grad():
+            traced_model = torch.jit.trace(model, dummy_input)
+
+        # Traced 모델을 ONNX로 export
+        torch.onnx.export(
+            traced_model,
+            dummy_input,
+            output_path,
+            opset_version=opset,
+            input_names=['images'],
+            output_names=['output0'],
+            dynamic_axes=dynamic_axes,
+            do_constant_folding=True,
+            verbose=False,
+        )
+
+        print(f"  ✅ JIT trace export 성공: {output_path}")
+        return True
+
+    except Exception as e:
+        print(f"  ❌ JIT trace 실패: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+def _export_with_torch_onnx(
+    model: nn.Module,
+    dummy_input: torch.Tensor,
+    output_path: str,
+    opset: int,
+    dynamic_batch: bool
+) -> bool:
+    """
+    기본 torch.onnx.export 사용.
+
+    Args:
+        model: QAT 모델
+        dummy_input: 더미 입력
+        output_path: 출력 경로
+        opset: ONNX opset 버전
+        dynamic_batch: 동적 배치 사용 여부
+
+    Returns:
+        성공 여부
+    """
+    try:
+        # Dynamic axes 설정
+        if dynamic_batch:
+            dynamic_axes = {
+                'images': {0: 'batch_size'},
+                'output0': {0: 'batch_size'},
+            }
+        else:
+            dynamic_axes = None
+
+        # ONNX Export
+        torch.onnx.export(
+            model,
+            dummy_input,
+            output_path,
+            opset_version=opset,
+            input_names=['images'],
+            output_names=['output0'],
+            dynamic_axes=dynamic_axes,
+            do_constant_folding=True,
+            verbose=False,
+        )
+
+        print(f"  ✅ torch.onnx.export 성공: {output_path}")
+
+        # 검증
+        import onnx
+        onnx_model = onnx.load(output_path)
+        onnx.checker.check_model(onnx_model)
+        print("  ✅ ONNX 모델 검증 통과")
+
+        return True
+
+    except Exception as e:
+        print(f"  ❌ torch.onnx.export 실패: {e}")
+        return False
+
+
+def freeze_quantizer_scales(model: nn.Module) -> None:
+    """
+    TensorQuantizer의 scale을 상수로 고정.
+
+    Calibration 후 학습된 scale/amax 값을 상수로 변환하여
+    data-dependent 연산을 제거합니다.
+
+    주의: 이 방법은 scale을 고정하므로 추가 fine-tuning이 불가능합니다.
+    Export 직전에만 사용하세요.
+
+    Args:
+        model: QAT 모델
+    """
+    try:
+        from pytorch_quantization import nn as quant_nn
+    except ImportError:
+        return
+
+    frozen_count = 0
+
+    for name, module in model.named_modules():
+        if isinstance(module, quant_nn.TensorQuantizer):
+            # amax를 상수로 고정
+            if hasattr(module, '_amax') and module._amax is not None:
+                if isinstance(module._amax, torch.Tensor):
+                    # Tensor를 상수로 변환 (requires_grad=False)
+                    module._amax = module._amax.detach().clone()
+                    module._amax.requires_grad = False
+
+                frozen_count += 1
+
+            # scale도 상수로 고정 (있는 경우)
+            if hasattr(module, '_scale') and module._scale is not None:
+                if isinstance(module._scale, torch.Tensor):
+                    module._scale = module._scale.detach().clone()
+                    module._scale.requires_grad = False
+
+    print(f"  - {frozen_count}개 TensorQuantizer scale 고정 완료")

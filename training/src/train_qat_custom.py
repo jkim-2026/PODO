@@ -249,9 +249,19 @@ def run_qat_training(config: Dict[str, Any], data_yaml: str) -> Optional[Path]:
 
         onnx_path = save_dir / "weights" / "best_qat.onnx"
 
-        # 메모리 상의 모델 우선 사용 (TensorQuantizer 손실 방지)
-        print(f"[QAT] 메모리 상의 QAT 모델로 ONNX export 수행...")
-        export_model = trainer.model  # ← 학습 완료 직후의 메모리 상 모델
+        # Best checkpoint의 weight를 메모리 상의 모델에 로드
+        # (모델 구조는 이미 QuantConv2d이므로 weight만 업데이트)
+        print(f"[QAT] Best checkpoint의 weight를 메모리 상 모델에 로드 중...")
+        if best_ckpt.exists():
+            checkpoint = torch.load(str(best_ckpt), map_location='cpu', weights_only=False)
+
+            # State dict 로드 (QuantConv2d 구조는 유지, weight만 업데이트)
+            trainer.model.load_state_dict(checkpoint['model'])
+            print(f"[QAT] ✅ Best checkpoint weight 로드 완료")
+        else:
+            print(f"[QAT] ⚠️ Best checkpoint 없음, last epoch 모델 사용")
+
+        export_model = trainer.model
 
         # TensorQuantizer 확인
         from pytorch_quantization import nn as quant_nn
