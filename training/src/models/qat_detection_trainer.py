@@ -43,7 +43,7 @@ class QATDetectionTrainer(DetectionTrainer):
         print(f"  - QAT epochs: {self.qat_epochs}")
         print(f"  - QAT lr: {self.qat_lr}")
 
-    def _setup_train(self, world_size):
+    def _setup_train(self, world_size=1):
         """
         QAT 전용 학습 설정.
 
@@ -51,7 +51,7 @@ class QATDetectionTrainer(DetectionTrainer):
         QAT에 필요한 설정을 오버라이드합니다.
 
         Args:
-            world_size: 분산 학습 world size
+            world_size: 분산 학습 world size (기본값: 1)
         """
         # 부모 클래스의 _setup_train 호출 (기본 설정)
         super()._setup_train(world_size)
