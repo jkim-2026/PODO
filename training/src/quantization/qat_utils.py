@@ -252,12 +252,15 @@ def collect_calibration_stats(
     """
     Calibration 통계 수집.
 
-    학습 데이터의 일부를 사용하여 activation 범위를 측정합니다.
-    histogram calibration은 더 정확한 양자화 범위를 찾습니다.
+    학습 데이터를 사용하여 activation 범위를 측정합니다.
+
+    - Method: MSE (Mean Squared Error) 
+    - Num batches: 전체 train 데이터  데이터셋 크기에 맞게 조정)
+    - Dataloader: Train dataloader (validation 아님!) 
 
     Args:
         model: QAT 모델
-        data_loader: Calibration용 데이터 로더
+        data_loader: Calibration용 데이터 로더 (TRAIN 데이터!)
         config: QAT 설정
         device: 디바이스 ('cuda' 또는 'cpu')
     """
@@ -268,9 +271,13 @@ def collect_calibration_stats(
 
     qat_config = config.get('qat', {})
     calib_config = qat_config.get('calibration', {})
-    num_batches = calib_config.get('num_batches', 100)
+    num_batches = calib_config.get('num_batches', 100)  # 기본값 100 (config에서 설정 권장)
+    method = calib_config.get('method', 'mse')  # MSE 사용
 
-    print(f"[QAT] Calibration 시작 (batches: {num_batches})...")
+    print(f"[QAT] Calibration 시작")
+    print(f"  - Method: {method}")
+    print(f"  - Num batches: {num_batches}")
+    print(f"  - Dataloader: Train data (validation 아님!)")
 
     model.eval()
     model.to(device)
@@ -299,7 +306,8 @@ def collect_calibration_stats(
         _disable_calibration(model)
 
     # Calibration 통계를 기반으로 scale/zero-point 계산
-    _compute_amax(model, calib_config.get('method', 'histogram'))
+    print(f"[QAT] Calibration 통계 계산 중 (method={method})...")
+    _compute_amax(model, method=method)
 
     print("[QAT] Calibration 완료")
 
@@ -332,8 +340,19 @@ def _disable_calibration(model: nn.Module) -> None:
                 module.disable_calib()
 
 
-def _compute_amax(model: nn.Module, method: str = 'histogram') -> None:
-    """Calibration 통계로부터 amax (activation max) 계산"""
+def _compute_amax(model: nn.Module, method: str = 'mse') -> None:
+    """
+    Calibration 통계로부터 amax (activation max) 계산.
+
+    Args:
+        model: QAT 모델
+        method: Calibration 방법
+            - 'mse': Mean Squared Error 
+            - 'entropy': KL Divergence 
+            - 'max': Absolute Max
+            - 'percentile': 99.99 percentile
+
+    """
     try:
         from pytorch_quantization import nn as quant_nn
         from pytorch_quantization.calib import HistogramCalibrator
@@ -344,9 +363,10 @@ def _compute_amax(model: nn.Module, method: str = 'histogram') -> None:
         if isinstance(module, quant_nn.TensorQuantizer):
             if module._calibrator is not None:
                 # Calibrator 타입에 따라 다르게 처리
-                # HistogramCalibrator만 method='entropy' 지원
+                # HistogramCalibrator만 method 인자 지원
                 if isinstance(module._calibrator, HistogramCalibrator):
-                    module.load_calib_amax(method='entropy')
+                    # Medium 기사: method='mse' 사용
+                    module.load_calib_amax(method=method)
                 else:
                     # MaxCalibrator는 method 인자를 지원하지 않음
                     module.load_calib_amax()

@@ -1,95 +1,190 @@
+# ============================================================================
 # QAT (Quantization-Aware Training) Configuration
-#
-# 사용법:
-#   cd training
-#   uv run python run_qat.py --config config_qat.yaml
+# ============================================================================
 
-# Experiment
-exp_name: "qat_yolov8s"
+# ----------------------------------------------------------------------------
+# 사용법
+# ----------------------------------------------------------------------------
+# cd training
+# uv run python src/train_qat_custom.py --config config_qat.yaml
+
+# ----------------------------------------------------------------------------
+# QAT 워크플로우
+# ----------------------------------------------------------------------------
+# 1. 일반 학습 완료된 모델 로드 (best.pt)
+# 2. Q/DQ 노드 추가 (Conv2d → QuantConv2d)
+# 3. Calibration (MSE method, Train dataloader)
+# 4. 커스텀 트레이너로 QAT Fine-tuning
+#    - 20 epochs
+#    - lr = 0.0001 (원래의 1/100)
+#    - warmup = 0 (비활성화)
+#    - amp = False (필수! Q/DQ 노드와 충돌 방지)
+#    - CosineAnnealingLR 스케줄러
+# 5. ONNX Export (Q/DQ 노드 포함)
+
+# ============================================================================
+# Experiment Settings
+# ============================================================================
+exp_name: "qat_yolov8s_medium"
 wandb_project: ""  # 비워두면 WandB 비활성화
 seed: 42
 
-# Dynamic Module Selection
+# ============================================================================
+# Module Selection
+# ============================================================================
 dataset_module: "dataset"
 model_module: "yolov8s_qat"  # QAT 전용 모델 모듈
 
-# Device Settings
-device: '0'
-workers: 8
+# ============================================================================
+# Device & Workers
+# ============================================================================
+device: '0'      # GPU ID (0, 1, ...) 또는 'cpu'
+workers: 8       # DataLoader worker 수
 
-# Data Config
+# ============================================================================
+# Dataset Configuration
+# ============================================================================
 data_path: "./PCB_DATASET"
 names: ['missing_hole', 'mouse_bite', 'open_circuit', 'short', 'spur', 'spurious_copper']
 
-# Split Strategy (기존 학습과 동일)
-test_size: 0.1
-val_size: 0.2
+# Train/Val/Test Split
+test_size: 0.1   # 10% test
+val_size: 0.2    # 20% validation (from remaining)
 
+# ============================================================================
 # QAT 전용 설정
+# ============================================================================
 qat:
-  # Pre-trained 모델 경로
-  # Scratch QAT: COCO pretrained 모델로 처음부터 양자화 학습
-  pretrained_path: "yolov8s.pt"  # COCO pretrained (자동 다운로드)
+  # --------------------------------------------------------------------------
+  # Pre-trained Model Path (Fine-tuning 방식)
+  # --------------------------------------------------------------------------
+  #
+  # 순서:
+  #   1. 일반 학습 (config.yaml) → runs/detect/yolov8s_baseline/weights/best.pt
+  #   2. QAT fine-tuning (이 config) → runs/qat/qat_yolov8s_medium/weights/best_qat.onnx
+  pretrained_path: "runs/detect/yolov8s_baseline/weights/best.pt"
 
+  # --------------------------------------------------------------------------
   # Calibration 설정
+  # --------------------------------------------------------------------------
+  # Calibration: Activation 범위 측정 단계 (학습 전 1회만 수행)
+ 
+  #   - Method: MSE (Mean Squared Error) 
+  #   - Num batches: 65로 조정 (우리 데이터셋 크기 고려)
+  #   - Dataloader: Train dataloader 
   calibration:
-    num_batches: 65         # 전체 train 데이터 사용 (483장 / 8 = ~61 배치)
-    method: "histogram"     # 'histogram' 또는 'max'
+    method: "mse"        # MSE (Mean Squared Error) 
+                         # 다른 옵션: "entropy", "max", "percentile"
 
-  # 양자화 설정
+    num_batches: 65      # 전체 train 데이터 사용 (483장 / 8 = ~61 배치)
+                         # 데이터를 중복해서 볼 필요 없으므로 전체 데이터 1회 사용
+
+  # --------------------------------------------------------------------------
+  # Quantization 설정
+  # --------------------------------------------------------------------------
   quantization:
-    num_bits: 8             # INT8
-    quant_conv: true        # Conv2d 레이어 양자화
-    quant_linear: true      # Linear 레이어 양자화
-    weight_per_channel: true  # 채널별 weight 양자화 (정확도 향상)
-    skip_last_layers: true  # Detect Head 마지막 레이어 양자화 제외 (정확도 민감)
+    num_bits: 8                  # INT8 양자화
+    quant_conv: true             # Conv2d 레이어 양자화
+    quant_linear: true           # Linear 레이어 양자화
+    weight_per_channel: true     # 채널별 weight 양자화 (정확도 향상)
+    skip_last_layers: true       # Detect Head 마지막 레이어 양자화 제외
+                                 # (정확도에 민감하므로 제외)
 
-  # 학습 설정 (Scratch QAT)
+  # --------------------------------------------------------------------------
+  # Fine-tuning 설정 
+  # --------------------------------------------------------------------------
   finetune:
-    epochs: 200             # Scratch QAT: 처음부터 학습
-    lr0: 0.001              # 일반 학습과 동일
-    lrf: 0.01               # 최종 LR = lr0 * lrf
+    epochs: 20           # 20 epochs
+    lr0: 0.0001          # 원래 lr의 1/100 정도
+                         # 이유: 이미 수렴된 모델이므로 미세 조정만
+    lrf: 0.01            # 최종 LR = lr0 * lrf = 0.000001
 
+  # --------------------------------------------------------------------------
   # ONNX Export 설정
+  # --------------------------------------------------------------------------
   export:
-    opset: 13               # ONNX opset 버전 (pytorch-quantization 권장)
-    simplify: true          # onnxsim으로 최적화
-    dynamic_batch: false    # 동적 배치 크기 (TensorRT용은 false 권장)
+    opset: 13            # ONNX opset 버전 (pytorch-quantization 권장: 13+)
+    simplify: true       # onnxsim으로 최적화 (선택사항)
+    dynamic_batch: false # 동적 배치 크기 (TensorRT용은 false 권장)
 
-# Training Control (Scratch QAT)
-epochs: 200                 # Scratch QAT: 처음부터 학습
-batch_size: 8               # 메모리 문제로 감소 (16 -> 8)
-img_size: 640
-patience: 30                # Early stopping patience
-save: true
-save_period: -1
+# ============================================================================
+# Training Control
+# ============================================================================
+epochs: 20               # QAT fine-tuning epochs
+batch_size: 8            # 메모리 문제로 감소 (원래 16 → 8)
+img_size: 640            # 이미지 크기
+patience: 30             # Early stopping patience
+save: true               # Best/Last checkpoint 저장
+save_period: -1          # -1: 매 epoch 저장 안 함 (best/last만)
+project: "runs/qat"      # 실험 결과 저장 경로
 
-# Optimizer (일반 학습과 동일)
-optimizer: 'AdamW'
-lr0: 0.001                  # 일반 학습과 동일
-momentum: 0.937
-weight_decay: 0.0005
+# ============================================================================
+# Optimizer
+# ============================================================================
+optimizer: 'AdamW'       # AdamW 사용
+lr0: 0.0001              # 초기 learning rate (원래 0.001의 1/100)
+                         # 커스텀 트레이너에서도 동일하게 설정됨
+momentum: 0.937          # SGD momentum (AdamW에서는 무시됨)
+weight_decay: 0.0005     # Weight decay (L2 regularization)
 
-# Scheduler
-scheduler_type: 'cosine'
-lrf: 0.01
+# ============================================================================
+# Scheduler (커스텀 트레이너에서 오버라이드됨)
+# ============================================================================
+# 주의: 커스텀 트레이너에서 CosineAnnealingLR로 교체됨!
+# 이 설정은 참고용이며, 실제로는 QATDetectionTrainer._setup_train()에서
+# CosineAnnealingLR(T_max=20, eta_min=lr0*0.01)로 대체됨
+scheduler_type: 'cosine' # 'cosine' 또는 'linear'
+lrf: 0.01                # 최종 LR 비율 (lr0 * lrf)
 
-# Loss Gains (기존과 동일)
-box: 7.5
-cls: 0.5
-dfl: 1.5
+# ============================================================================
+# Loss Gains (일반 학습과 동일)
+# ============================================================================
+box: 7.5                 # Box loss gain
+cls: 0.5                 # Classification loss gain
+dfl: 1.5                 # Distribution Focal Loss gain
 
-# Augmentation (일반 학습과 동일)
-hsv_h: 0.015
-hsv_s: 0.7
-hsv_v: 0.4
-degrees: 0.0
-translate: 0.1
-scale: 0.5
-shear: 0.0
-perspective: 0.0
-flipud: 0.0
-fliplr: 0.5
-mosaic: 1.0
-mixup: 0.0
-copy_paste: 0.0
+# ============================================================================
+# Data Augmentation (일반 학습과 동일)
+# ============================================================================
+# HSV 색상 augmentation
+hsv_h: 0.015             # Hue augmentation
+hsv_s: 0.7               # Saturation augmentation
+hsv_v: 0.4               # Value augmentation
+
+# Geometric augmentation
+degrees: 0.0             # 회전 각도 범위 (±degrees)
+translate: 0.1           # 이동 범위 (이미지 크기의 ±translate)
+scale: 0.5               # 크기 변화 범위 (0.5 = 0.5x ~ 1.5x)
+shear: 0.0               # Shear 각도 범위
+perspective: 0.0         # Perspective 변환 범위
+
+# Flip augmentation
+flipud: 0.0              # 상하 반전 확률 (0.0 = 안 함)
+fliplr: 0.5              # 좌우 반전 확률 (0.5 = 50% 확률)
+
+# Advanced augmentation
+mosaic: 1.0              # Mosaic augmentation 확률 (1.0 = 항상)
+mixup: 0.0               # MixUp augmentation 확률 (0.0 = 안 함)
+copy_paste: 0.0          # Copy-Paste augmentation 확률 (0.0 = 안 함)
+
+# ============================================================================
+# Notes
+# ============================================================================
+# 1. 먼저 일반 학습 완료 필요:
+#    uv run python run_exp.py --config config.yaml
+#    → runs/detect/yolov8s_baseline/weights/best.pt 생성
+#
+# 2. QAT 학습 실행:
+#    uv run python src/train_qat_custom.py --config config_qat.yaml
+#    → runs/qat/qat_yolov8s_medium/weights/best_qat.onnx 생성
+#
+# 3. ONNX에 Q/DQ 노드 포함 확인:
+#    - QuantizeLinear, DequantizeLinear 노드가 있어야 함
+#    - 엣지에서 calibration 불필요 (QAT 학습 시 이미 포함됨)
+#
+# 4. TensorRT 변환 (Jetson에서):
+#    trtexec --onnx=best_qat.onnx --int8 --saveEngine=best.engine
+#
+# 5. 예상 결과 (Medium 기사 기준):
+#    - mAP 손실: 약 3% (0.464 → 0.45)
+#    - 속도 향상: 약 2배 (144ms → 75ms)
