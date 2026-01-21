@@ -220,37 +220,23 @@ def run_qat_training(config: Dict[str, Any], data_yaml: str) -> Optional[Path]:
     try:
         from src.quantization import export_qat_to_onnx
 
-        # Best checkpoint 경로
-        best_pt = save_dir / "weights" / "best.pt"
         onnx_path = save_dir / "weights" / "best_qat.onnx"
 
-        if not best_pt.exists():
-            print(f"[QAT] ⚠️ Best checkpoint를 찾을 수 없음: {best_pt}")
-            print("[QAT] 학습이 완료되지 않았거나 저장에 실패했습니다.")
-            return save_dir
-
-        # ONNX export
-        print(f"[QAT] Best checkpoint: {best_pt}")
-        print(f"[QAT] ONNX export 중...")
-
-        # Checkpoint 로드
-        checkpoint = torch.load(best_pt, map_location='cpu')
-        if isinstance(checkpoint, dict) and 'model' in checkpoint:
-            export_model = checkpoint['model']
-        else:
-            export_model = checkpoint
+        # 메모리 상의 모델 우선 사용 (TensorQuantizer 손실 방지)
+        print(f"[QAT] 메모리 상의 QAT 모델로 ONNX export 수행...")
+        export_model = trainer.model  # ← 학습 완료 직후의 메모리 상 모델
 
         # TensorQuantizer 확인
+        from pytorch_quantization import nn as quant_nn
         quantizer_count = sum(1 for m in export_model.modules()
                              if isinstance(m, quant_nn.TensorQuantizer))
         print(f"[QAT] TensorQuantizer 개수: {quantizer_count}")
 
         if quantizer_count == 0:
-            print(f"\n[QAT] ❌ TensorQuantizer가 없습니다!")
-            print(f"  Best checkpoint에 QAT 정보가 없을 수 있습니다.")
-            # 메모리 상의 모델 사용
-            print(f"[QAT] 메모리 상의 모델로 export 시도...")
-            export_model = model.model
+            raise RuntimeError(
+                "TensorQuantizer가 없습니다! "
+                "메모리 상의 모델도 양자화 정보를 잃었을 수 있습니다."
+            )
 
         # ONNX export
         export_qat_to_onnx(
@@ -260,6 +246,7 @@ def run_qat_training(config: Dict[str, Any], data_yaml: str) -> Optional[Path]:
             img_size=config.get('img_size', 640),
         )
 
+        # Q/DQ 노드 확인
         if onnx_path.exists():
             file_size = onnx_path.stat().st_size / 1024 / 1024
             print(f"\n[QAT] ✅ ONNX export 성공!")
