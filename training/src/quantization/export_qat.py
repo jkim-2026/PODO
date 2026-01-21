@@ -202,8 +202,7 @@ def _export_nvidia_tensorrt_style(
                 'images': {0: 'batch'},
                 'output0': {0: 'batch'}
             },
-            do_constant_folding=True,
-            enable_onnx_checker=False  # quantized model 필수 설정
+            do_constant_folding=True
         )
 
         # 4. 플래그 원상복구
