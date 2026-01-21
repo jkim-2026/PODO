@@ -24,10 +24,11 @@ def export_qat_to_onnx(
     device: str = 'cuda'
 ) -> str:
     """
-    QAT 모델을 ONNX로 export (개선된 버전).
+    QAT 모델을 ONNX로 export (참조 리포지토리 방식).
 
     여러 방법을 순차적으로 시도하여 data-dependent expression 오류를 해결합니다:
-    1. torch.jit.trace 기반 export (권장)
+    0. NVIDIA TensorRT 방식 (참조 리포지토리, 권장)
+    1. torch.jit.trace 기반 export
     2. torch.onnx.export with static scale
     3. torch.onnx.export (기본)
     4. Ultralytics 내장 export (fallback)
@@ -52,45 +53,57 @@ def export_qat_to_onnx(
     qat_config = config.get('qat', {})
     export_config = qat_config.get('export', {})
 
-    opset = export_config.get('opset', 13)
+    opset = export_config.get('opset', 14)  # 참조 리포지토리는 opset 14 사용
     simplify = export_config.get('simplify', True)
     dynamic_batch = export_config.get('dynamic_batch', False)
-    use_jit_trace = export_config.get('use_jit_trace', True)  # 기본: JIT trace 사용
 
     print(f"[QAT] ONNX Export 시작...")
     print(f"  - Output: {output_path}")
     print(f"  - Opset: {opset}")
-    print(f"  - Use JIT trace: {use_jit_trace}")
     print(f"  - Simplify: {simplify}")
     print(f"  - Dynamic batch: {dynamic_batch}")
 
     model.eval()
     model.to(device)
 
-    # TensorQuantizer를 inference mode로 설정
-    print("[QAT] TensorQuantizer를 inference mode로 설정 중...")
-    _prepare_model_for_export(model)
-    print("[QAT] ✅ TensorQuantizer inference mode 설정 완료")
-
     # 더미 입력 생성
     dummy_input = torch.randn(batch_size, 3, img_size, img_size, device=device)
 
+    # 방법 0: NVIDIA TensorRT 방식 (참조 리포지토리)
+    try:
+        print("\n[방법 0] NVIDIA TensorRT 방식 export 시도 (참조 리포지토리)...")
+        result = _export_nvidia_tensorrt_style(
+            model, dummy_input, output_path, opset, simplify
+        )
+        if result:
+            _verify_qdq_nodes(output_path)
+            quant_nn.TensorQuantizer.use_fb_fake_quant = False
+            return output_path
+    except Exception as e:
+        print(f"[QAT] ❌ NVIDIA TensorRT 방식 실패: {e}")
+        import traceback
+        traceback.print_exc()
+
+    # TensorQuantizer를 inference mode로 설정
+    print("\n[QAT] TensorQuantizer를 inference mode로 설정 중...")
+    _prepare_model_for_export(model)
+    print("[QAT] ✅ TensorQuantizer inference mode 설정 완료")
+
     # 방법 1: torch.jit.trace 사용 (data-dependent 문제 해결)
-    if use_jit_trace:
-        try:
-            print("\n[방법 1] torch.jit.trace 기반 export 시도...")
-            result = _export_with_jit_trace(
-                model, dummy_input, output_path, opset, dynamic_batch
-            )
-            if result:
-                # 검증 및 후처리
-                if simplify:
-                    output_path = _simplify_onnx(output_path)
-                _verify_qdq_nodes(output_path)
-                quant_nn.TensorQuantizer.use_fb_fake_quant = False
-                return output_path
-        except Exception as e:
-            print(f"[QAT] ❌ JIT trace 실패: {e}")
+    try:
+        print("\n[방법 1] torch.jit.trace 기반 export 시도...")
+        result = _export_with_jit_trace(
+            model, dummy_input, output_path, opset, dynamic_batch
+        )
+        if result:
+            # 검증 및 후처리
+            if simplify:
+                output_path = _simplify_onnx(output_path)
+            _verify_qdq_nodes(output_path)
+            quant_nn.TensorQuantizer.use_fb_fake_quant = False
+            return output_path
+    except Exception as e:
+        print(f"[QAT] ❌ JIT trace 실패: {e}")
 
     # 방법 2: Static scale 고정 후 export
     try:
@@ -127,6 +140,96 @@ def export_qat_to_onnx(
     print("\n[방법 4] Ultralytics 내장 export 시도...")
     quant_nn.TensorQuantizer.use_fb_fake_quant = False
     return _export_via_ultralytics(model, output_path, config, img_size)
+
+
+def _export_nvidia_tensorrt_style(
+    model: nn.Module,
+    dummy_input: torch.Tensor,
+    output_path: str,
+    opset: int,
+    simplify: bool
+) -> bool:
+    """
+    NVIDIA TensorRT 방식 ONNX export (참조 리포지토리 + 공식 문서).
+
+    핵심 개선사항:
+    1. use_fb_fake_quant = True 설정 (PyTorch fake quantization 사용)
+    2. enable_onnx_export() 컨텍스트 매니저 사용 (NVIDIA 공식)
+    3. enable_onnx_checker=False 설정 (quantized model 필수)
+    4. Detect 레이어 export 모드 활성화
+
+    Args:
+        model: QAT 모델
+        dummy_input: 더미 입력
+        output_path: 출력 경로
+        opset: ONNX opset 버전 (14 권장)
+        simplify: ONNX 단순화 여부
+
+    Returns:
+        성공 여부
+    """
+    try:
+        from pytorch_quantization import nn as quant_nn
+        from ultralytics.nn.modules import Detect
+        import pytorch_quantization
+
+        # 1. PyTorch fake quantization 활성화
+        print("  - use_fb_fake_quant 활성화...")
+        quant_nn.TensorQuantizer.use_fb_fake_quant = True
+
+        # 2. Detect 레이어를 export 모드로 설정
+        print("  - Detect 레이어 export 모드 설정...")
+        for m in model.modules():
+            if isinstance(m, Detect):
+                m.export = True
+                m.format = 'onnx'
+                print(f"    ✓ {m.__class__.__name__} export=True, format=onnx")
+
+        # 3. enable_onnx_export 컨텍스트에서 ONNX export
+        print(f"  - ONNX export with enable_onnx_export() (opset={opset})...")
+
+        input_names = ["images"]
+        output_names = ["output0"]
+
+        with pytorch_quantization.enable_onnx_export():
+            torch.onnx.export(
+                model,
+                dummy_input,
+                output_path,
+                verbose=False,
+                opset_version=opset,
+                input_names=input_names,
+                output_names=output_names,
+                dynamic_axes={
+                    'images': {0: 'batch'},
+                    'output0': {0: 'batch'}
+                },
+                do_constant_folding=True,
+                enable_onnx_checker=False  # quantized model 필수 설정
+            )
+
+        # 4. 플래그 원상복구
+        quant_nn.TensorQuantizer.use_fb_fake_quant = False
+
+        print(f"  ✅ NVIDIA TensorRT 방식 export 성공: {output_path}")
+
+        # 5. ONNX simplify (선택)
+        if simplify:
+            output_path = _simplify_onnx(output_path)
+
+        return True
+
+    except Exception as e:
+        # 예외 발생 시에도 플래그 복구
+        try:
+            quant_nn.TensorQuantizer.use_fb_fake_quant = False
+        except:
+            pass
+
+        print(f"  ❌ NVIDIA TensorRT 방식 실패: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
 
 
 def _export_via_ultralytics(
