@@ -495,11 +495,17 @@ def save_quantizer_state(model: nn.Module) -> Dict[str, Any]:
 
             # amax (activation max) 저장
             if hasattr(module, '_amax') and module._amax is not None:
-                state['amax'] = module._amax.detach().cpu()
+                if isinstance(module._amax, torch.Tensor):
+                    state['amax'] = module._amax.detach().cpu()
+                else:
+                    state['amax'] = module._amax  # float/int 등 scalar 값
 
             # scale 저장 (있는 경우)
             if hasattr(module, '_scale') and module._scale is not None:
-                state['scale'] = module._scale.detach().cpu()
+                if isinstance(module._scale, torch.Tensor):
+                    state['scale'] = module._scale.detach().cpu()
+                else:
+                    state['scale'] = module._scale  # float/int 등 scalar 값
 
             # unsigned 여부 저장
             if hasattr(module, '_unsigned'):
@@ -549,12 +555,16 @@ def restore_quantizer_state(model: nn.Module, state: Dict[str, Any]) -> None:
                     amax = quantizer_state['amax']
                     if isinstance(amax, torch.Tensor):
                         module._amax = amax.to(module._amax.device if module._amax is not None else 'cpu')
+                    else:
+                        module._amax = amax  # float/int 등 scalar 값 그대로 복원
 
                 # scale 복원
                 if 'scale' in quantizer_state:
                     scale = quantizer_state['scale']
                     if isinstance(scale, torch.Tensor) and hasattr(module, '_scale'):
                         module._scale = scale.to(module._scale.device if module._scale is not None else 'cpu')
+                    elif hasattr(module, '_scale'):
+                        module._scale = scale  # float/int 등 scalar 값 그대로 복원
 
                 # enabled 상태 복원
                 if 'is_enabled' in quantizer_state:
