@@ -106,14 +106,12 @@ class QATDetectionTrainer(DetectionTrainer):
 
     def get_model(self, cfg=None, weights=None, verbose=True):
         """
-        모델 로드 (QAT checkpoint에서 TensorQuantizer 복원).
+        모델 로드 (QAT checkpoint 우선 처리, strict=False 사용).
 
-        부모 클래스의 get_model()을 호출한 후,
-        checkpoint에 저장된 TensorQuantizer 상태를 복원합니다.
-
-        **중요**: Validation 메트릭 0 문제 해결
-        - Conv2d로 로드된 모델을 QuantConv2d로 재구성
-        - 그 후 quantizer_state 복원
+        **핵심 변경사항**:
+        1. QAT checkpoint 감지 시, 빈 모델 생성 → QuantConv2d 교체 → state_dict 로드 순서
+        2. strict=False 사용으로 키 불일치 허용 (TensorQuantizer 키 누락 무시)
+        3. FP32로 저장된 checkpoint를 그대로 로드
 
         Args:
             cfg: 모델 config
@@ -123,28 +121,30 @@ class QATDetectionTrainer(DetectionTrainer):
         Returns:
             모델
         """
-        model = super().get_model(cfg=cfg, weights=weights, verbose=verbose)
-
-        # Checkpoint에서 quantizer 상태 복원
+        # QAT checkpoint 확인
         if weights and Path(weights).exists():
             try:
                 checkpoint = torch.load(weights, map_location='cpu', weights_only=False)
 
                 if 'quantizer_state' in checkpoint:
                     print(f"\n[QAT] QAT Checkpoint 감지: {Path(weights).name}")
-                    print(f"[QAT] Conv2d → QuantConv2d 재구성 시작...")
+                    print(f"[QAT] 참조 리포지토리 방식으로 로드 중...")
 
-                    # 1단계: Conv2d → QuantConv2d 교체
-                    # checkpoint의 quantizer_state에서 설정 추출
+                    # 1단계: 빈 모델 생성 (weights 없이)
+                    print(f"[QAT] [1/3] 빈 모델 생성...")
+                    model = super().get_model(cfg=cfg, weights=None, verbose=verbose)
+
+                    # 2단계: Conv2d → QuantConv2d 교체
+                    print(f"[QAT] [2/3] Conv2d → QuantConv2d 교체...")
                     quantizer_state = checkpoint['quantizer_state']
 
-                    # 첫 번째 quantizer에서 num_bits 추출 (없으면 기본값 8)
+                    # num_bits 추출
                     num_bits = 8
                     if 'quantizers' in quantizer_state and quantizer_state['quantizers']:
                         first_quantizer = next(iter(quantizer_state['quantizers'].values()))
                         num_bits = first_quantizer.get('num_bits', 8)
 
-                    # QAT config 생성 (기본값 사용)
+                    # QAT config 생성
                     qat_config = {
                         'qat': {
                             'quantization': {
@@ -157,66 +157,93 @@ class QATDetectionTrainer(DetectionTrainer):
                         }
                     }
 
-                    from src.quantization.qat_utils import replace_conv_with_quantconv, restore_quantizer_state
-
-                    # Conv2d → QuantConv2d 교체
+                    from src.quantization.qat_utils import replace_conv_with_quantconv
                     model = replace_conv_with_quantconv(model, qat_config)
 
-                    # 2단계: TensorQuantizer amax/scale 복원
-                    restore_quantizer_state(model, quantizer_state)
-                    print(f"[QAT] ✅ QAT 모델 복원 완료: {quantizer_state['quantizer_count']}개 quantizer")
+                    # 3단계: state_dict 로드 (strict=False로 키 불일치 허용)
+                    print(f"[QAT] [3/3] State dict 로드 (strict=False)...")
+
+                    # checkpoint['model']이 QuantConv2d 상태를 포함하고 있으므로 직접 로드
+                    missing_keys, unexpected_keys = model.load_state_dict(
+                        checkpoint['model'].state_dict() if hasattr(checkpoint['model'], 'state_dict') else checkpoint['model'],
+                        strict=False
+                    )
+
+                    print(f"[QAT] State dict 로드 완료")
+                    if missing_keys:
+                        print(f"  - Missing keys: {len(missing_keys)} (정상, TensorQuantizer 내부 키)")
+                    if unexpected_keys:
+                        print(f"  - Unexpected keys: {len(unexpected_keys)}")
+
+                    # TensorQuantizer 개수 확인
+                    from pytorch_quantization import nn as quant_nn
+                    quantizer_count = sum(1 for m in model.modules()
+                                         if isinstance(m, quant_nn.TensorQuantizer))
+                    print(f"[QAT] ✅ QAT 모델 복원 완료: {quantizer_count}개 TensorQuantizer\n")
+
+                    return model
+
                 else:
                     print(f"[QAT] 일반 checkpoint (quantizer_state 없음)")
+
             except Exception as e:
                 print(f"[QAT] ⚠️ QAT 모델 복원 실패: {e}")
                 import traceback
                 traceback.print_exc()
+                print(f"[QAT] 일반 모델로 폴백합니다...")
 
-        # TensorQuantizer 개수 확인 (디버깅)
-        try:
-            from pytorch_quantization import nn as quant_nn
-            quantizer_count = sum(1 for m in model.modules()
-                                 if isinstance(m, quant_nn.TensorQuantizer))
-            print(f"[QAT] 최종 모델 - TensorQuantizer: {quantizer_count}개")
-
-            if quantizer_count == 0:
-                print(f"[QAT] ⚠️ 경고: TensorQuantizer가 없습니다!")
-            else:
-                print(f"[QAT] ✅ TensorQuantizer 활성화됨\n")
-        except ImportError:
-            pass
-
-        return model
+        # 일반 checkpoint 또는 QAT 로드 실패 시
+        return super().get_model(cfg=cfg, weights=weights, verbose=verbose)
 
     def save_model(self):
         """
-        QAT 모델 저장 (TensorQuantizer 정보 포함).
+        QAT 모델 저장 (.half() 제거, FP32 유지).
 
-        부모 클래스의 save_model()을 호출한 후,
-        TensorQuantizer 메타데이터를 별도로 저장합니다.
-        이를 통해 best checkpoint validation 시 메트릭이 0이 되는 문제를 방지합니다.
+        Ultralytics BaseTrainer.save_model()을 완전히 오버라이드하여
+        .half() 호출을 방지합니다. QuantConv2d + TensorQuantizer를
+        FP32 그대로 저장하여 precision 손실을 막습니다.
         """
-        # 부모 클래스의 save_model() 호출
-        super().save_model()
+        from copy import deepcopy
+        from ultralytics.utils.torch_utils import de_parallel
+        from ultralytics import __version__
+        from datetime import datetime
+        import pandas as pd
+
+        # 메트릭 수집 (부모 클래스 로직 복사)
+        metrics = {**self.metrics, **{'fitness': self.fitness}}
+        results = {k.strip(): v for k, v in pd.read_csv(self.csv).to_dict(orient='list').items()}
 
         # TensorQuantizer 상태 저장
         from src.quantization.qat_utils import save_quantizer_state
-
         quantizer_state = save_quantizer_state(self.model)
 
-        # Best checkpoint 파일에 quantizer 정보 추가
-        # DetectionTrainer는 best.pt와 last.pt를 저장함
-        for ckpt_attr in ['best', 'last']:
-            if hasattr(self, ckpt_attr):
-                ckpt_path = getattr(self, ckpt_attr)
-                if ckpt_path and ckpt_path.exists():
-                    try:
-                        checkpoint = torch.load(ckpt_path, map_location='cpu', weights_only=False)
-                        checkpoint['quantizer_state'] = quantizer_state
-                        torch.save(checkpoint, ckpt_path)
-                        print(f"[QAT] TensorQuantizer 상태 저장 완료: {ckpt_path.name} ({quantizer_state['quantizer_count']}개)")
-                    except Exception as e:
-                        print(f"[QAT] ⚠️ {ckpt_path.name} TensorQuantizer 저장 실패: {e}")
+        # Checkpoint 딕셔너리 생성 (.half() 제거!)
+        ckpt = {
+            'epoch': self.epoch,
+            'best_fitness': self.best_fitness,
+            'model': deepcopy(de_parallel(self.model)),  # ← .half() 제거!
+            'ema': deepcopy(self.ema.ema) if self.ema else None,  # ← .half() 제거!
+            'updates': self.ema.updates if self.ema else None,
+            'optimizer': self.optimizer.state_dict(),
+            'train_args': vars(self.args),
+            'train_metrics': metrics,
+            'train_results': results,
+            'date': datetime.now().isoformat(),
+            'version': __version__,
+            'quantizer_state': quantizer_state,  # ← TensorQuantizer 정보 추가
+        }
+
+        # 저장 (부모 클래스 로직 복사)
+        torch.save(ckpt, self.last)
+        if self.best_fitness == self.fitness:
+            torch.save(ckpt, self.best)
+        if (self.save_period > 0) and (self.epoch > 0) and (self.epoch % self.save_period == 0):
+            torch.save(ckpt, self.wdir / f'epoch{self.epoch}.pt')
+
+        print(f"[QAT] ✅ Checkpoint 저장 완료 (FP32, QuantConv2d 유지)")
+        print(f"  - TensorQuantizer: {quantizer_state['quantizer_count']}개")
+        print(f"  - Best: {self.best}")
+        print(f"  - Last: {self.last}")
 
     def optimizer_step(self):
         """

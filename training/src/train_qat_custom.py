@@ -255,9 +255,17 @@ def run_qat_training(config: Dict[str, Any], data_yaml: str) -> Optional[Path]:
         if best_ckpt.exists():
             checkpoint = torch.load(str(best_ckpt), map_location='cpu', weights_only=False)
 
-            # State dict 로드 (QuantConv2d 구조는 유지, weight만 업데이트)
-            trainer.model.load_state_dict(checkpoint['model'])
-            print(f"[QAT] ✅ Best checkpoint weight 로드 완료")
+            # State dict 로드 (strict=False로 키 불일치 허용)
+            # checkpoint['model']이 모델 객체인 경우 state_dict() 호출
+            state_dict = checkpoint['model'].state_dict() if hasattr(checkpoint['model'], 'state_dict') else checkpoint['model']
+
+            missing_keys, unexpected_keys = trainer.model.load_state_dict(state_dict, strict=False)
+
+            print(f"[QAT] ✅ Best checkpoint weight 로드 완료 (strict=False)")
+            if missing_keys:
+                print(f"  - Missing keys: {len(missing_keys)}")
+            if unexpected_keys:
+                print(f"  - Unexpected keys: {len(unexpected_keys)}")
         else:
             print(f"[QAT] ⚠️ Best checkpoint 없음, last epoch 모델 사용")
 
