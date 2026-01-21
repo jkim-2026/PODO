@@ -54,7 +54,7 @@ class QATDetectionTrainer(DetectionTrainer):
             world_size: 분산 학습 world size (기본값: 1)
         """
         # 부모 클래스의 _setup_train 호출 (기본 설정)
-        super()._setup_train(world_size)
+        super()._setup_train()
 
         print("\n" + "="*60)
         print("[QAT Trainer] _setup_train() 오버라이드 시작")
