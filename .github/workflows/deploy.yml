@@ -7,7 +7,8 @@ on:
     branches:
       - feat/GA  # 테스트 후 main 또는 dev로 변경
     paths:
-      - 'serving/api/**'  # 백엔드 코드 변경 시에만 실행
+      - 'serving/api/**'  # 백엔드 코드 변경 시 실행
+      - '.github/workflows/**'  # 워크플로우 변경 시에도 실행
   workflow_dispatch:  # 수동 실행 가능
 
 jobs:
