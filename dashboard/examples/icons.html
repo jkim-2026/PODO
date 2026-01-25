@@ -274,18 +274,39 @@ Coded by www.creative-tim.com
               }
             }
 
-            // Map Defect
-            if (record.result === 'defect') {
-              let bbox = [0, 0, 0, 0];
-              if (record.bbox && record.bbox.length === 4) {
-                const [x1, y1, x2, y2] = record.bbox;
-                bbox = [x1, y1, x2 - x1, y2 - y1];
-              }
+            // Map Defects from 'detections' array
+            if (record.detections && record.detections.length > 0) {
+              // Update confidence to the max confidence of detections
+              const maxConf = Math.max(...record.detections.map(d => d.confidence));
+              groupedMap.get(record.image_id).confidence = maxConf;
 
-              groupedMap.get(record.image_id).defects.push({
-                type: record.defect_type || 'Unknown',
-                bbox: bbox
+              record.detections.forEach(det => {
+                let bbox = [0, 0, 0, 0];
+                if (det.bbox && det.bbox.length === 4) {
+                  const [x1, y1, x2, y2] = det.bbox;
+                  bbox = [x1, y1, x2 - x1, y2 - y1]; // Convert to [x, y, w, h]
+                }
+
+                groupedMap.get(record.image_id).defects.push({
+                  type: det.defect_type || 'Unknown',
+                  bbox: bbox
+                });
               });
+            } else if (record.result === 'defect') {
+              // Fallback for legacy or malformed data where result is defect but detections empty
+              // Check if flat fields exist (legacy support)
+              if (record.defect_type) {
+                let bbox = [0, 0, 0, 0];
+                if (record.bbox && record.bbox.length === 4) {
+                  const [x1, y1, x2, y2] = record.bbox;
+                  bbox = [x1, y1, x2 - x1, y2 - y1];
+                }
+                groupedMap.get(record.image_id).defects.push({
+                  type: record.defect_type,
+                  bbox: bbox
+                });
+                groupedMap.get(record.image_id).confidence = record.confidence || 0;
+              }
             }
           });
 
