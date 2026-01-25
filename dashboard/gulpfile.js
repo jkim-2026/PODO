@@ -5,6 +5,7 @@ var autoprefixer = require('gulp-autoprefixer');
 var sourcemaps = require('gulp-sourcemaps');
 var open = require('gulp-open');
 var clean = require('gulp-clean');
+var { createProxyMiddleware } = require('http-proxy-middleware');
 var browserSync = require('browser-sync').create();
 
 var Paths = {
@@ -34,7 +35,16 @@ gulp.task('watch', function () {
 gulp.task('serve', function () {
   browserSync.init({
     server: {
-      baseDir: "./"
+      baseDir: "./",
+      middleware: [
+        createProxyMiddleware('/api', {
+          target: 'http://3.36.185.146:80',
+          changeOrigin: true,
+          pathRewrite: {
+            '^/api': '' // remove /api prefix when forwarding
+          }
+        })
+      ]
     }
   });
 

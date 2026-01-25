@@ -1,4 +1,4 @@
-const API_BASE_URL = "http://3.36.185.146:80";
+const API_BASE_URL = "/api";
 
 const ApiClient = {
     getStats: async () => {
