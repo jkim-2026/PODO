@@ -22,22 +22,27 @@ async def get_latest_logs(limit: int = 10):
     """
     return await db.get_recent_logs(limit)
 
+
 @router.get("/defects", response_model=Dict[str, int])
 async def get_defect_aggregation():
     """
     Returns aggregation of defect types.
     Example: {"scratch": 5, "dent": 2}
     """
-    # This logic could be moved to db.py if complex
+    # 새로운 스키마: detections 컬럼에 JSON 배열로 저장됨
     defect_logs = await db.get_defect_logs()
     
     aggregation = {}
     for log in defect_logs:
-        d_type = log.get("defect_type")
-        if d_type:
-            aggregation[d_type] = aggregation.get(d_type, 0) + 1
-        else:
-            # Handle cases where defect_type might be missing for a defect
-            aggregation["unknown"] = aggregation.get("unknown", 0) + 1
-            
+        # log['detections']는 이미 파싱된 리스트
+        detections = log.get("detections", [])
+        
+        for detection in detections:
+            d_type = detection.get("defect_type")
+            if d_type:
+                aggregation[d_type] = aggregation.get(d_type, 0) + 1
+            else:
+                # defect_type이 없으면 unknown으로 분류
+                aggregation["unknown"] = aggregation.get("unknown", 0) + 1
+    
     return aggregation
