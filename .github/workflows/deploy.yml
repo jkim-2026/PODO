@@ -36,12 +36,8 @@ jobs:
             cd serving/api
             uv sync
 
-            # 기존 프로세스 종료
-            pkill -f "uvicorn.*8080" || true
-            sleep 2
-
-            # 서버 재시작 (setsid로 SSH 세션과 완전 분리)
-            setsid nohup uv run uvicorn main:app --host 0.0.0.0 --port 8080 > server.log 2>&1 < /dev/null &
+            # systemd로 서버 재시작
+            sudo systemctl restart fastapi
             sleep 5
 
             # 헬스체크
