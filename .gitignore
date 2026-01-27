@@ -44,3 +44,7 @@ htmlcov/
 training/PCB_DATASET/
 training/runs/
 *.pt
+
+# Node.js (Frontend)
+node_modules/
+dashboard/dist/
