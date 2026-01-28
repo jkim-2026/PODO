@@ -8,7 +8,8 @@ echo "🪽 인코딩을 시작합니다: $INPUT -> $OUTPUT"
 ffmpeg -i "$INPUT" \
 -c:v libx264 -preset ultrafast -crf 23 \
 -b:v 5000k -maxrate 5000k -bufsize 10000k \
--g 30 -pix_fmt yuv420p -movflags +faststart \
+-pix_fmt yuv420p -movflags +faststart \
+-g 30 -x264-params "repeat-headers=1:keyint=30" \
 "$OUTPUT"
 
 echo "🪽 인코딩이 완료되었습니다!"
