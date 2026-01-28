@@ -84,35 +84,35 @@ class InferenceWorker(threading.Thread):
         """추론 결과를 파싱하고 백엔드로 전송"""
         detections = []
         for box in result.boxes:
-            # bbox: [x1, y1, x2, y2]
-            # classes: 0: Normal, 1: Defect 등 (모델 구성에 따라 다름)
+            # bbox: [x1, y1, x2, y2] 
+            # 백엔드 스키마(schemas.py) 형식에 맞춤
             detections.append({
-                "class_id": int(box.cls[0]),
-                "class_name": result.names[int(box.cls[0])],
-                "confidence": float(box.conf[0]),
-                "bbox": [round(float(x), 2) for x in box.xyxy[0].tolist()]
+                "defect_type": result.names[int(box.cls[0])], # class_name -> defect_type
+                "confidence": round(float(box.conf[0]), 4),
+                "bbox": [int(float(x)) for x in box.xyxy[0].tolist()] # 정수형 리스트로 변환
             })
 
         # 이미지 base64 인코딩 (전송용)
         _, buffer = cv2.imencode('.jpg', crop)
         img_base64 = base64.b64encode(buffer).decode('utf-8')
 
-        # 페이로드 구성
+        # image_id 생성 (예: PCB_20260128_224601)
+        timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+        image_id = f"PCB_{timestamp_str}"
+
+        # 백엔드 DetectRequest 스펙에 맞춘 페이로드 구성
         payload = {
             "timestamp": datetime.now().isoformat(),
-            "detections": detections,
+            "image_id": image_id,
             "image": img_base64,
-            "metadata": {
-                "source": "jetson_edge",
-                "model": os.path.basename(self.model_path)
-            }
+            "detections": detections
         }
 
         # 백엔드 전송
         try:
-            response = requests.post(self.api_url, json=payload, timeout=3.0)
+            response = requests.post(self.api_url, json=payload, timeout=5.0)
             if response.status_code == 200 or response.status_code == 201:
-                print(f"[InferenceWorker] 전송 성공! (탐지 개수: {len(detections)})")
+                print(f"[InferenceWorker] {image_id} 전송 성공! (탐지 개수: {len(detections)})")
             else:
                 print(f"[InferenceWorker] 전송 실패: HTTP {response.status_code} - {response.text}")
         except requests.exceptions.RequestException as e:
