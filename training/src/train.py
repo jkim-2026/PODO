@@ -8,6 +8,16 @@ class PCBTrainer:
         Executes training for a specific fold data.yaml
         """
         import wandb
+        import mlflow
+        
+        # MLflow Setup
+        # 1. Disable Ultralytics Auto-MLflow (Prevents conflicts)
+        from ultralytics import settings as ul_settings
+        ul_settings.update({'mlflow': False})
+        
+        # 2. Configure Local MLflow
+        mlflow.set_tracking_uri("file:./mlruns")
+        mlflow.set_experiment("PCB_Res_Experiments")
         
         # WandB Setup
         if self.config.get('wandb_project'):
@@ -31,6 +41,25 @@ class PCBTrainer:
 
         # Suppress generic YOLO info logs (Scanning dataset...)
         LOGGER.setLevel(logging.WARNING)
+
+        # Disable Default Ultralytics MLflow Callback (prevents Run 'not found' errors)
+        # Ultralytics tries to auto-log if mlflow is installed. We handle it manually.
+        from ultralytics.utils.callbacks import mlflow as mlflow_callbacks
+        
+        # Safely remove MLflow callbacks if they exist
+        checks = [
+            ('on_pretrain_routine', 'on_pretrain_routine'),
+            ('on_fit_epoch_end', 'on_fit_epoch_end'),
+            ('on_train_end', 'on_train_end')
+        ]
+        
+        for cb_name, list_name in checks:
+            try:
+                cb_func = getattr(mlflow_callbacks, cb_name, None)
+                if cb_func and cb_func in self.model.callbacks.get(list_name, []):
+                    self.model.callbacks[list_name].remove(cb_func)
+            except Exception:
+                pass
         
         epoch_start_time = 0
         current_batch_idx = 0
@@ -102,6 +131,17 @@ class PCBTrainer:
             # Print with Fitness
             print(f"Epoch {epoch}/{total_epochs} | box: {box_loss:.4f} cls: {cls_loss:.4f} dfl: {dfl_loss:.4f} | mAP50: {map50:.4f} | Fitness: {fitness:.4f} | Time: {duration:.2f}s")
             
+            # MLflow Metric Logging (Per Epoch)
+            if mlflow.active_run():
+                mlflow.log_metrics({
+                    "train/box_loss": box_loss,
+                    "train/cls_loss": cls_loss,
+                    "train/dfl_loss": dfl_loss,
+                    "metrics/mAP50": map50,
+                    "metrics/mAP50-95": map50_95,
+                    "metrics/fitness": fitness
+                }, step=epoch)
+            
             # Print Class-wise mAP50 if available
             try:
                 if hasattr(trainer, 'validator') and trainer.validator is not None:
@@ -140,7 +180,15 @@ class PCBTrainer:
         self.model.add_callback("on_train_batch_end", on_train_batch_end)
         self.model.add_callback("on_fit_epoch_end", on_fit_epoch_end)
 
-        results = self.model.train(
+        # Start MLflow Run
+        if mlflow.active_run():
+            mlflow.end_run()
+            
+        mlflow.start_run(run_name=self.config['exp_name'])
+        mlflow.log_params(self.config)
+
+        try:
+            results = self.model.train(
             data=data_yaml,
             epochs=self.config['epochs'],
             batch=self.config['batch_size'],
@@ -189,6 +237,12 @@ class PCBTrainer:
             verbose=False,  # Disable default TQDM bar (We are using manual)
             val=True       # Enable validation
         )
+            
+        except Exception as e:
+            print(f"Training failed: {e}")
+            if mlflow.active_run():
+                mlflow.end_run()
+            raise e
         
         # Run Final Evaluation on Best Model
         self.run_final_eval(data_yaml)
@@ -253,6 +307,43 @@ class PCBTrainer:
             print(f"Overall mAP50: {metrics.box.map50:.4f}")
             print(f"Overall mAP50-95: {metrics.box.map:.4f}")
             print(f"{'='*50}\n")
+            
+            # Log Final Best Metrics to MLflow
+            if mlflow.active_run():
+                # 1. Global Metrics
+                log_data = {
+                    "final_mAP50": metrics.box.map50,
+                    "final_mAP50-95": metrics.box.map
+                }
+                
+                # 2. Class-wise Metrics
+                try:
+                    names = metrics.names
+                    if hasattr(metrics, 'ap_class_index'):
+                        for i, cls_idx in enumerate(metrics.ap_class_index):
+                            cls_idx = int(cls_idx)
+                            name = names.get(cls_idx, str(cls_idx))
+                            
+                            # Clean name for MLflow (no spaces/special chars)
+                            safe_name = name.replace(" ", "_")
+                            
+                            res = metrics.class_result(i)
+                            map50_cls = res[2]
+                            map50_95_cls = res[3]
+                            
+                            log_data[f"final_mAP50_{safe_name}"] = map50_cls
+                            log_data[f"final_mAP95_{safe_name}"] = map50_95_cls
+                except Exception as e:
+                    print(f"Warning: Could not log class metrics: {e}")
+
+                mlflow.log_metrics(log_data)
+                
+                # Log Artifacts
+                if os.path.exists(best_model_path):
+                    mlflow.log_artifact(best_model_path)
+                
+                # End Run explicitly
+                mlflow.end_run()
             
         except Exception as e:
             print(f"Error during final evaluation: {e}")
