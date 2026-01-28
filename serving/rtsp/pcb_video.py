@@ -19,7 +19,7 @@ def create_premium_pcb_video():
     BOTTOM_SHADING_STRENGTH = 0.15 # Subtle darkening at the bottom
     
     ROOT_DIR = '/data/ephemeral/home/ss/serving/rtsp'
-    OUTPUT_NAME = os.path.join(ROOT_DIR, 'PCB_Conveyor_30fps.mp4')
+    OUTPUT_NAME = os.path.join(ROOT_DIR, '30fps_dark.mp4')
     
     # --- [2. SEARCH IMAGES] ---
     # Only look inside the 'images' folder to avoid picking up temp files or outputs
@@ -61,7 +61,7 @@ def create_premium_pcb_video():
     # For a perfect seamless loop that includes empty space, we just use total_belt_width.
     # The canvas needs to be total_belt_width + WIDTH to handle the transition.
     canvas_width = total_belt_width + WIDTH
-    belt = np.full((HEIGHT, canvas_width, 3), 40, dtype=np.uint8) # Dark charcoal belt
+    belt = np.full((HEIGHT, canvas_width, 3), 15, dtype=np.uint8) # Dark charcoal belt
 
     # Create a subtle texture for the conveyor belt
     noise_tex = np.random.randint(0, 10, (HEIGHT, canvas_width, 3), dtype=np.uint8)
