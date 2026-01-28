@@ -105,7 +105,15 @@ def main():
     frame_queue = queue.Queue(maxsize=FRAME_QUEUE_SIZE)
     crop_queue = queue.Queue(maxsize=CROP_QUEUE_SIZE)
 
-    # RTSP 수신 스레드 시작
+    # 1. 추론 워커 먼저 초기화 (모델 로드 및 엔진 변환 수행)
+    print(f"[Main] 추론 워커 초기화 중 (모델: {args.model})...")
+    try:
+        inference_worker = InferenceWorker(crop_queue, args.model, args.api_url)
+    except Exception as e:
+        print(f"[Main] 추론 워커 환경 설정 실패: {e}")
+        sys.exit(1)
+
+    # 2. RTSP 수신 스레드 시작 (모델 준비 완료 후)
     receiver = RTSPReceiver(args.input, frame_queue, loop=args.loop)
     receiver.start()
 
@@ -121,15 +129,8 @@ def main():
     else:
         print("[Main] RTSP 연결 타임아웃 (무시하고 진행하거나 확인 필요)")
 
-    # 1. 추론 워커 시작 (모델 로드 및 엔진 변환 수행)
-    print(f"[Main] 추론 워커 초기화 중 (모델: {args.model})...")
-    try:
-        inference_worker = InferenceWorker(crop_queue, args.model, args.api_url)
-        inference_worker.start()
-    except Exception as e:
-        print(f"[Main] 추론 워커 시작 실패: {e}")
-        receiver.stop()
-        sys.exit(1)
+    # 3. 모든 준비가 끝나면 추론 워커 스레드 가동
+    inference_worker.start()
 
     # 전처리기 초기화
     preprocessor = PCBPreprocessor(BACKGROUND_PATH)

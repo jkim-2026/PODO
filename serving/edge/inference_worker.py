@@ -51,7 +51,7 @@ class InferenceWorker(threading.Thread):
                 # Jetson(TensorRT) 최적화를 위해 export 실행
                 # device=0 (GPU) 사용, dynamic=True (가변 크기 대응)
                 try:
-                    model.export(format='engine', dynamic=True, device=0)
+                    model.export(format='engine', dynamic=True, device=0, half=True)
                     return YOLO(engine_path, task='detect')
                 except Exception as e:
                     print(f"[InferenceWorker] 엔진 변환 실패, 기본 모델로 진행합니다: {e}")
