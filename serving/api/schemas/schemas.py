@@ -106,3 +106,74 @@ class SessionListResponse(BaseModel):
     세션 목록 응답
     """
     sessions: List[SessionResponse] = Field(default_factory=list, description="세션 목록")
+
+
+# ===== Health Monitoring 관련 스키마 =====
+
+class AlertInfo(BaseModel):
+    """
+    알림 정보
+    """
+    level: str = Field(..., description="알림 레벨 (warning, critical)")
+    message: str = Field(..., description="알림 메시지")
+    value: float = Field(..., description="현재 값")
+    threshold: float = Field(..., description="임계값")
+    action: str = Field(..., description="권장 조치")
+
+
+class ConfidenceDistribution(BaseModel):
+    """
+    신뢰도 분포
+    """
+    high: int = Field(..., description="높은 신뢰도 (0.9-1.0)")
+    medium: int = Field(..., description="중간 신뢰도 (0.8-0.9)")
+    low: int = Field(..., description="낮은 신뢰도 (0.7-0.8)")
+    very_low: int = Field(..., description="매우 낮은 신뢰도 (<0.7)")
+
+
+class DefectConfidenceStats(BaseModel):
+    """
+    결함 신뢰도 통계
+    """
+    avg_confidence: float = Field(..., description="평균 신뢰도")
+    min_confidence: float = Field(..., description="최소 신뢰도")
+    max_confidence: float = Field(..., description="최대 신뢰도")
+    distribution: ConfidenceDistribution = Field(..., description="신뢰도 분포")
+
+
+class DefectTypeStat(BaseModel):
+    """
+    결함 타입별 통계
+    """
+    defect_type: str = Field(..., description="결함 종류")
+    count: int = Field(..., description="발생 횟수")
+    avg_confidence: float = Field(..., description="평균 신뢰도")
+
+
+class SessionInfo(BaseModel):
+    """
+    세션 정보 (Health API용)
+    """
+    id: Optional[int] = Field(None, description="세션 ID")
+    started_at: Optional[str] = Field(None, description="시작 시간")
+    ended_at: Optional[str] = Field(None, description="종료 시간")
+    duration_seconds: Optional[float] = Field(None, description="진행 시간 (초)")
+    is_active: bool = Field(..., description="진행 중 여부")
+
+
+class HealthResponse(BaseModel):
+    """
+    시스템 건강 상태 응답
+    """
+    status: str = Field(..., description="시스템 상태 (healthy, warning, critical)")
+    timestamp: str = Field(..., description="응답 시각 (ISO 8601)")
+    session_info: SessionInfo = Field(..., description="세션 정보")
+    total_inspections: int = Field(..., description="총 검사 수")
+    normal_count: int = Field(..., description="정상 개수")
+    defect_count: int = Field(..., description="불량 개수")
+    defect_rate: float = Field(..., description="불량률 (%)")
+    total_defects: int = Field(..., description="총 결함 개수")
+    avg_defects_per_item: float = Field(..., description="불량 PCB당 평균 결함 개수")
+    defect_confidence_stats: Optional[DefectConfidenceStats] = Field(None, description="결함 신뢰도 통계")
+    defect_type_stats: List[DefectTypeStat] = Field(default_factory=list, description="결함 타입별 통계")
+    alerts: List[AlertInfo] = Field(default_factory=list, description="알림 목록")

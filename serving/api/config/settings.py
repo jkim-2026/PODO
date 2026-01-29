@@ -20,3 +20,22 @@ CORS_ALLOW_HEADERS = ["*"]
 API_TITLE = "PCB Defect Detection API"
 API_DESCRIPTION = "Backend for Jetson Edge AI and Streamlit Frontend"
 API_VERSION = "1.0.0"
+
+# Health Monitoring Alert Thresholds
+ALERT_THRESHOLDS = {
+    # 불량률 임계값 (%)
+    "defect_rate_warning": 10.0,
+    "defect_rate_critical": 20.0,
+
+    # 평균 신뢰도 임계값
+    "avg_confidence_warning": 0.85,
+    "avg_confidence_critical": 0.75,
+
+    # 낮은 신뢰도 비율 임계값 (%)
+    "low_confidence_ratio_warning": 20.0,
+    "low_confidence_ratio_critical": 40.0,
+
+    # 불량 PCB당 평균 결함 개수
+    "avg_defects_per_item_warning": 2.0,
+    "avg_defects_per_item_critical": 3.0,
+}
