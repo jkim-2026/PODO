@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Query
 from typing import Optional
 from database import db
-from schemas.schemas import HealthResponse
+from schemas.schemas import HealthResponse, AlertsResponse
 
 router = APIRouter(prefix="/monitoring", tags=["monitoring"])
 
@@ -24,3 +24,32 @@ async def get_health_status(
     - PCB당 평균 결함: warning 2.0개, critical 3.0개
     """
     return await db.get_health(session_id)
+
+
+@router.get("/alerts", response_model=AlertsResponse)
+async def get_alerts(
+    session_id: Optional[str] = Query(None, description="세션 ID ('latest', 숫자, 또는 생략)")
+):
+    """
+    알림 조회 API (프론트엔드 폴링용 경량 버전)
+
+    - /monitoring/health의 alerts 필드만 반환
+    - 프론트엔드 실시간 폴링에 최적화
+
+    **사용 예시:**
+    - GET /monitoring/alerts (전체 데이터)
+    - GET /monitoring/alerts?session_id=latest (최신 세션)
+    - GET /monitoring/alerts?session_id=1 (특정 세션)
+    """
+    health_data = await db.get_health(session_id)
+
+    return {
+        "status": health_data["status"],
+        "timestamp": health_data["timestamp"],
+        "session_info": health_data["session_info"],
+        "alerts": health_data["alerts"],
+        "summary": {
+            "defect_rate": health_data["defect_rate"],
+            "avg_confidence": health_data.get("defect_confidence_stats", {}).get("avg_confidence", 0.0) if health_data.get("defect_confidence_stats") else 0.0
+        }
+    }

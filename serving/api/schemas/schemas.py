@@ -177,3 +177,15 @@ class HealthResponse(BaseModel):
     defect_confidence_stats: Optional[DefectConfidenceStats] = Field(None, description="결함 신뢰도 통계")
     defect_type_stats: List[DefectTypeStat] = Field(default_factory=list, description="결함 타입별 통계")
     alerts: List[AlertInfo] = Field(default_factory=list, description="알림 목록")
+
+
+class AlertsResponse(BaseModel):
+    """
+    알림 조회 응답 (Health API의 경량 버전)
+    프론트엔드 폴링용 최적화
+    """
+    status: str = Field(..., description="시스템 상태 (healthy, warning, critical)")
+    timestamp: str = Field(..., description="응답 시각 (ISO 8601)")
+    session_info: SessionInfo = Field(..., description="세션 정보")
+    alerts: List[AlertInfo] = Field(default_factory=list, description="알림 목록")
+    summary: dict = Field(..., description="간단한 요약 (defect_rate, avg_confidence)")
