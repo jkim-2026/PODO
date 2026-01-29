@@ -59,6 +59,16 @@ async def init_db():
         await db.commit()
 
 
+async def close_db():
+    """
+    Close database connections.
+    Called on server shutdown.
+    """
+    # aiosqlite는 context manager 사용하므로 별도 정리 불필요
+    # 이 함수는 향후 확장을 위해 존재
+    pass
+
+
 async def add_inspection_log(data: DetectRequest, image_path: Optional[str] = None) -> List[int]:
     """
     Save inspection result as a single row.

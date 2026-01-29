@@ -3,11 +3,34 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # Import routers, database, and config
 from routers import detect, stats, sessions, monitoring
 from database.db import init_db
+from database import db
 from config import settings
+from utils.slack_notifier import send_slack_alert
+
+# 스케줄러 전역 변수
+scheduler = AsyncIOScheduler()
+
+
+async def check_and_send_alerts():
+    """
+    주기적으로 health 체크하고 Slack 알림 전송
+    """
+    try:
+        health_data = await db.get_health("latest")
+
+        if health_data["status"] == "critical":
+            await send_slack_alert(
+                status=health_data["status"],
+                alerts=health_data["alerts"],
+                session_info=health_data["session_info"]
+            )
+    except Exception as e:
+        print(f"알림 체크 실패: {e}")
 
 
 @asynccontextmanager
@@ -15,8 +38,21 @@ async def lifespan(app: FastAPI):
     # Startup: Create directories and initialize database
     settings.IMAGE_DIR.mkdir(parents=True, exist_ok=True)
     await init_db()
+
+    # 스케줄러 시작
+    scheduler.add_job(
+        check_and_send_alerts,
+        'interval',
+        minutes=settings.SLACK_CHECK_INTERVAL_MINUTES,
+        id='slack_alert_check'
+    )
+    scheduler.start()
+
     yield
-    # Shutdown: (cleanup if needed)
+
+    # Shutdown
+    scheduler.shutdown()
+    await db.close_db()
 
 
 app = FastAPI(

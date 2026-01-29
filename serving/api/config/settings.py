@@ -39,3 +39,8 @@ ALERT_THRESHOLDS = {
     "avg_defects_per_item_warning": 2.0,
     "avg_defects_per_item_critical": 3.0,
 }
+
+# Slack Webhook Settings
+SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL", "")  # 환경변수로 관리
+SLACK_ALERT_ENABLED = os.getenv("SLACK_ALERT_ENABLED", "false").lower() == "true"
+SLACK_CHECK_INTERVAL_MINUTES = 5  # 5분마다 체크
