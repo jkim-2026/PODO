@@ -10,4 +10,5 @@ dependencies = [
     "python-multipart",
     "aiosqlite",
     "pydantic",
+    "requests>=2.32.5",
 ]
