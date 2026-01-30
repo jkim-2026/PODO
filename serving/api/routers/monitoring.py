@@ -43,13 +43,18 @@ async def get_alerts(
     """
     health_data = await db.get_health(session_id)
 
+    # HealthResponse Pydantic 모델에서 필요한 필드 추출
+    avg_confidence = 0.0
+    if health_data.defect_confidence_stats:
+        avg_confidence = health_data.defect_confidence_stats.avg_confidence
+
     return {
-        "status": health_data["status"],
-        "timestamp": health_data["timestamp"],
-        "session_info": health_data["session_info"],
-        "alerts": health_data["alerts"],
+        "status": health_data.status,
+        "timestamp": health_data.timestamp,
+        "session_info": health_data.session_info,
+        "alerts": health_data.alerts,
         "summary": {
-            "defect_rate": health_data["defect_rate"],
-            "avg_confidence": health_data.get("defect_confidence_stats", {}).get("avg_confidence", 0.0) if health_data.get("defect_confidence_stats") else 0.0
+            "defect_rate": health_data.defect_rate,
+            "avg_confidence": avg_confidence
         }
     }
