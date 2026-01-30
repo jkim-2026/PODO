@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import Optional, List
 
 # --- Shared Models ---
@@ -189,3 +189,86 @@ class AlertsResponse(BaseModel):
     session_info: SessionInfo = Field(..., description="세션 정보")
     alerts: List[AlertInfo] = Field(default_factory=list, description="알림 목록")
     summary: dict = Field(..., description="간단한 요약 (defect_rate, avg_confidence)")
+
+
+# ===== 피드백 관련 스키마 =====
+
+class FeedbackRequest(BaseModel):
+    """
+    피드백 생성 요청
+    """
+    log_id: int = Field(..., gt=0, description="검사 로그 ID")
+    feedback_type: str = Field(..., description="피드백 종류 (false_positive, false_negative, label_correction)")
+    correct_label: Optional[str] = Field(None, description="올바른 라벨 (label_correction 시 필수)")
+    comment: Optional[str] = Field(None, max_length=500, description="추가 설명")
+    created_by: Optional[str] = Field(None, max_length=100, description="작성자")
+
+    @field_validator('feedback_type')
+    @classmethod
+    def validate_feedback_type(cls, v: str) -> str:
+        allowed = {'false_positive', 'false_negative', 'label_correction'}
+        if v not in allowed:
+            raise ValueError(f"feedback_type must be one of {allowed}")
+        return v
+
+    @model_validator(mode='after')
+    def validate_correct_label_requirement(self):
+        from config.settings import ALLOWED_FEEDBACK_LABELS
+
+        # label_correction 타입인 경우 correct_label 필수 및 검증
+        if self.feedback_type == 'label_correction':
+            if not self.correct_label or self.correct_label.strip() == '':
+                raise ValueError("correct_label required for label_correction")
+            # 허용값 검증
+            if self.correct_label not in ALLOWED_FEEDBACK_LABELS:
+                raise ValueError(
+                    f"correct_label must be one of {ALLOWED_FEEDBACK_LABELS}, got '{self.correct_label}'"
+                )
+        return self
+
+
+class FeedbackResponse(BaseModel):
+    """
+    피드백 생성 응답
+    """
+    id: int = Field(..., description="피드백 ID")
+    log_id: int = Field(..., description="검사 로그 ID")
+    feedback_type: str = Field(..., description="피드백 종류")
+    correct_label: Optional[str] = Field(None, description="올바른 라벨")
+    comment: Optional[str] = Field(None, description="추가 설명")
+    created_at: str = Field(..., description="생성 시각 (ISO 8601)")
+    created_by: Optional[str] = Field(None, description="작성자")
+    status: str = Field(default="ok", description="응답 상태")
+
+
+class FeedbackTypeStats(BaseModel):
+    """
+    피드백 종류별 통계
+    """
+    false_positive: int = Field(default=0, description="오탐 개수 (정상인데 불량으로)")
+    false_negative: int = Field(default=0, description="미탐 개수 (불량인데 정상으로)")
+    label_correction: int = Field(default=0, description="라벨 수정 개수 (결함 종류 틀림)")
+
+
+class DefectTypeFeedbackStats(BaseModel):
+    """
+    결함 타입별 피드백 통계
+    """
+    defect_type: str = Field(..., description="결함 종류")
+    false_positive: int = Field(default=0, description="오탐 개수")
+    false_negative: int = Field(default=0, description="미탐 개수")
+    label_correction: int = Field(default=0, description="라벨 수정 개수")
+
+
+class FeedbackStatsResponse(BaseModel):
+    """
+    피드백 통계 응답
+    """
+    total_feedback: int = Field(..., description="전체 피드백 개수")
+    by_type: FeedbackTypeStats = Field(..., description="피드백 종류별 집계")
+    by_defect_type: List[DefectTypeFeedbackStats] = Field(
+        default_factory=list,
+        description="결함 타입별 피드백 집계"
+    )
+    recent_feedback_count: int = Field(..., description="최근 24시간 피드백 개수")
+    period_description: str = Field(default="최근 24시간", description="집계 기간")

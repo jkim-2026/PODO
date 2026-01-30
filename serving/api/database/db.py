@@ -56,6 +56,31 @@ async def init_db():
             # 컬럼이 이미 존재하면 무시
             pass
 
+        # 피드백 테이블 생성
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS feedback (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                log_id INTEGER NOT NULL,
+                feedback_type TEXT NOT NULL,
+                correct_label TEXT,
+                comment TEXT,
+                created_at TEXT NOT NULL,
+                created_by TEXT,
+                FOREIGN KEY (log_id) REFERENCES inspection_logs(id) ON DELETE CASCADE
+            )
+        """)
+
+        # 피드백 테이블 인덱스 생성
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_feedback_log_id ON feedback(log_id)"
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_feedback_type ON feedback(feedback_type)"
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_feedback_created_at ON feedback(created_at)"
+        )
+
         await db.commit()
 
 
@@ -716,3 +741,184 @@ async def get_health(session_id: Optional[str]) -> HealthResponse:
         defect_type_stats=defect_type_stats,
         alerts=alerts
     )
+
+
+# ===== 피드백 관련 함수 =====
+
+async def log_exists(log_id: int) -> bool:
+    """
+    log_id가 inspection_logs에 존재하는지 확인
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "SELECT id FROM inspection_logs WHERE id = ?", (log_id,)
+        )
+        row = await cursor.fetchone()
+        return row is not None
+
+
+async def add_feedback(
+    log_id: int,
+    feedback_type: str,
+    correct_label: Optional[str] = None,
+    comment: Optional[str] = None,
+    created_by: Optional[str] = None
+) -> Dict:
+    """
+    피드백 저장
+
+    Args:
+        log_id: 검사 로그 ID
+        feedback_type: 피드백 종류 (false_positive, false_negative, label_correction)
+        correct_label: 올바른 라벨 (label_correction 시 필수)
+        comment: 추가 설명
+        created_by: 작성자
+
+    Returns:
+        저장된 피드백 데이터
+
+    Raises:
+        HTTPException: log_id가 존재하지 않을 때
+    """
+    # log_id 존재 여부 검증
+    if not await log_exists(log_id):
+        raise HTTPException(status_code=404, detail=f"Inspection log {log_id} not found")
+
+    # 피드백 저장
+    created_at = datetime.now().isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            """INSERT INTO feedback
+            (log_id, feedback_type, correct_label, comment, created_at, created_by)
+            VALUES (?, ?, ?, ?, ?, ?)""",
+            (log_id, feedback_type, correct_label, comment, created_at, created_by)
+        )
+        await db.commit()
+        return {
+            "id": cursor.lastrowid,
+            "log_id": log_id,
+            "feedback_type": feedback_type,
+            "correct_label": correct_label,
+            "comment": comment,
+            "created_at": created_at,
+            "created_by": created_by
+        }
+
+
+async def get_feedback_by_log_id(log_id: int) -> List[Dict]:
+    """
+    특정 검사에 대한 피드백 조회 (향후 확장용)
+
+    Args:
+        log_id: 검사 로그 ID
+
+    Returns:
+        피드백 목록 (최신순)
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM feedback WHERE log_id = ? ORDER BY created_at DESC",
+            (log_id,)
+        )
+        return [dict(row) for row in await cursor.fetchall()]
+
+
+async def get_feedback_stats() -> Dict:
+    """
+    피드백 통계 집계
+
+    Returns:
+        {
+            "total_feedback": int,
+            "by_type": {"false_positive": int, "false_negative": int, "label_correction": int},
+            "by_defect_type": [
+                {
+                    "defect_type": str,
+                    "false_positive": int,
+                    "false_negative": int,
+                    "label_correction": int
+                }
+            ],
+            "recent_feedback_count": int
+        }
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+
+        # 1. 전체 피드백 개수
+        cursor = await db.execute("SELECT COUNT(*) as cnt FROM feedback")
+        row = await cursor.fetchone()
+        total_feedback = row["cnt"]
+
+        # 2. 피드백 종류별 집계
+        cursor = await db.execute("""
+            SELECT feedback_type, COUNT(*) as cnt
+            FROM feedback
+            GROUP BY feedback_type
+        """)
+        rows = await cursor.fetchall()
+
+        by_type = {
+            "false_positive": 0,
+            "false_negative": 0,
+            "label_correction": 0
+        }
+        for row in rows:
+            by_type[row["feedback_type"]] = row["cnt"]
+
+        # 3. 결함 타입별 × 피드백 종류별 교차 집계
+        # inspection_logs와 JOIN, detections JSON 파싱
+        cursor = await db.execute("""
+            SELECT il.detections, f.feedback_type
+            FROM feedback f
+            INNER JOIN inspection_logs il ON f.log_id = il.id
+            WHERE il.result = 'defect'
+        """)
+        rows = await cursor.fetchall()
+
+        # 결함 타입별 집계
+        defect_type_stats = {}
+
+        for row in rows:
+            if row["detections"]:
+                try:
+                    detections = json.loads(row["detections"])
+                    for det in detections:
+                        defect_type = det.get("defect_type", "unknown")
+                        feedback_type = row["feedback_type"]
+
+                        if defect_type not in defect_type_stats:
+                            defect_type_stats[defect_type] = {
+                                "defect_type": defect_type,
+                                "false_positive": 0,
+                                "false_negative": 0,
+                                "label_correction": 0
+                            }
+
+                        defect_type_stats[defect_type][feedback_type] += 1
+                except:
+                    pass
+
+        # 리스트로 변환 (개수 내림차순 정렬)
+        by_defect_type = list(defect_type_stats.values())
+        by_defect_type.sort(
+            key=lambda x: x["false_positive"] + x["false_negative"] + x["label_correction"],
+            reverse=True
+        )
+
+        # 4. 최근 24시간 피드백 개수
+        cursor = await db.execute("""
+            SELECT COUNT(*) as cnt
+            FROM feedback
+            WHERE created_at >= datetime('now', '-1 day')
+        """)
+        row = await cursor.fetchone()
+        recent_feedback_count = row["cnt"]
+
+        return {
+            "total_feedback": total_feedback,
+            "by_type": by_type,
+            "by_defect_type": by_defect_type,
+            "recent_feedback_count": recent_feedback_count
+        }

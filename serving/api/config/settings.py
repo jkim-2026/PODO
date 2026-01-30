@@ -43,4 +43,7 @@ ALERT_THRESHOLDS = {
 # Slack Webhook Settings
 SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL", "")  # 환경변수로 관리
 SLACK_ALERT_ENABLED = os.getenv("SLACK_ALERT_ENABLED", "false").lower() == "true"
-SLACK_CHECK_INTERVAL_MINUTES = 5  # 5분마다 체크
+
+# Defect Type Settings
+ALLOWED_DEFECT_TYPES = {"scratch", "hole", "contamination", "crack"}
+ALLOWED_FEEDBACK_LABELS = ALLOWED_DEFECT_TYPES | {"normal"}  # 피드백에서는 normal도 허용
