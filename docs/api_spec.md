@@ -51,15 +51,15 @@
     {
       "timestamp": "string",       // ISO 8601 형식 (예: '2026-01-14T15:30:45')
       "image_id": "string",        // 이미지 식별자 (예: 'PCB_001234')
-      "image": "string",           // (선택) Base64 인코딩된 이미지 데이터
-      "detections": [              // 탐지된 결함 목록 (빈 배열 = 정상)
+      "image": "string",           // (선택) Base64 인코딩된 이미지 데이터 (정상/불량 관계없이 전송 가능)
+      "detections": [              // 탐지된 결함 목록 (빈 배열일 경우 '정상')
         {
           "defect_type": "string", // 결함 종류 (scratch, hole, contamination, crack)
           "confidence": 0.95,      // 신뢰도 (0.0 ~ 1.0)
           "bbox": [100, 50, 200, 150] // [x1, y1, x2, y2] 바운딩 박스
         }
       ],
-      "session_id": 1              // (선택) 세션 ID
+      "session_id": 1              // (선택) 세션 ID - 검사 결과를 특정 세션에 연결
     }
     ```
 - **Response Body (`DetectResponse`):**
@@ -137,8 +137,7 @@
 프론트엔드 대시보드 구성을 위한 요약 통계 정보를 제공합니다.
 
 - **Endpoint:** `GET /stats`
-- **Query Parameter:**
-  - `session_id` (선택): 특정 세션의 통계만 조회. 생략 시 전체 통계 반환.
+- **Query Parameter:** `session_id` (선택) - 특정 세션의 통계만 조회. 생략 시 전체 통계 반환.
 - **Response Body (`StatsResponse`):**
     ```json
     {
@@ -154,9 +153,20 @@
         "timestamp": "2026-01-25T04:12:52",
         "image_id": "PCB_001",
         "result": "defect",
-        "detections": [...],
-        "image_path": "raw/20260125/...",
-        "session_id": 1
+        "detections": [
+          {
+            "defect_type": "defect_5",
+            "confidence": 0.8187,
+            "bbox": [627, 542, 724, 612]
+          },
+          {
+            "defect_type": "defect_5",
+            "confidence": 0.7866,
+            "bbox": [859, 1114, 911, 1173]
+          }
+        ],
+        "image_path": "images/defects/2026-01-25T04-12-52.046352_09_spur_08.jpg.jpg",
+        "session_id": 1              // 세션 ID (null일 수 있음)
       }
     }
     ```
@@ -169,9 +179,9 @@
 
 - **Endpoint:** `GET /latest`
 - **Query Parameters:**
-  - `limit` (선택, 기본값: 10): 반환할 로그 개수
-  - `session_id` (선택): 특정 세션의 로그만 조회
-- **Response Body:** `List[Dict]`
+    - `limit` (기본값: 10) - 반환할 로그 개수
+    - `session_id` (선택) - 특정 세션의 로그만 조회. 생략 시 전체 로그 반환.
+- **Response Body (List of InspectionLogResponse):**
     ```json
     [
       {
@@ -182,9 +192,10 @@
         "detections": [
           {"defect_type": "scratch", "confidence": 0.95, "bbox": [10, 20, 100, 120]}
         ],
-        "image_path": "raw/20260125/...",
-        "session_id": 1
-      }
+        "image_path": "images/defects/2026-01-25T04-12-52.046352_09_spur_08.jpg.jpg",
+        "session_id": 1              // 세션 ID (null일 수 있음)
+      },
+      ...
     ]
     ```
 
@@ -195,9 +206,8 @@
 결함 타입별 발생 횟수를 집계합니다.
 
 - **Endpoint:** `GET /defects`
-- **Query Parameter:**
-  - `session_id` (선택): 특정 세션의 결함만 집계
-- **Response Body:** `Dict[str, int]`
+- **Query Parameter:** `session_id` (선택) - 특정 세션의 결함만 집계. 생략 시 전체 결함 집계.
+- **Response Body:**
     ```json
     {
       "scratch": 15,
@@ -209,158 +219,146 @@
 
 ---
 
-### 3.5 세션 관리 (Sessions)
+### 2.5 세션 관리 (Sessions)
+검사 세션을 생성하고 관리합니다. 세션은 엣지에서 추론을 시작/종료할 때 생성/종료되며, 같은 세션 내의 검사 결과를 그룹으로 관리할 수 있습니다.
 
-검사 세션의 생성, 종료, 조회 기능을 제공합니다.
-
-#### 3.5.1 세션 생성
+#### POST /sessions/ - 세션 생성
+새 세션을 시작합니다. 엣지에서 추론 시작 시 호출합니다.
 
 - **Endpoint:** `POST /sessions/`
-- **Response Body (`SessionCreateResponse`):** (201 Created)
+- **Request Body:** 없음
+- **Response Body (`SessionCreateResponse`):**
     ```json
     {
-      "id": 1,
-      "started_at": "2026-01-25T10:00:00"
+      "id": 1,                           // 생성된 세션 ID
+      "started_at": "2026-01-30T10:00:00.123456"  // 세션 시작 시간 (ISO 8601)
     }
     ```
+- **Status Code:** `201 Created`
 
-#### 3.5.2 세션 종료
+---
+
+#### PATCH /sessions/{session_id} - 세션 종료
+세션을 종료합니다 (ended_at 설정). 엣지에서 추론 종료 시 호출합니다.
 
 - **Endpoint:** `PATCH /sessions/{session_id}`
+- **Path Parameter:** `session_id` (정수) - 종료할 세션 ID
+- **Request Body:** 없음
 - **Response Body (`SessionResponse`):**
     ```json
     {
       "id": 1,
-      "started_at": "2026-01-25T10:00:00",
-      "ended_at": "2026-01-25T12:30:00"
+      "started_at": "2026-01-30T10:00:00.123456",
+      "ended_at": "2026-01-30T11:30:00.654321"   // 세션 종료 시간 (ISO 8601)
     }
     ```
-- **Error:** 404 Not Found (세션이 존재하지 않을 경우)
+- **Error Response:**
+    - `404 Not Found`: 세션이 존재하지 않는 경우
+    ```json
+    {"detail": "Session 999 not found"}
+    ```
 
-#### 3.5.3 세션 목록 조회
+---
+
+#### GET /sessions/ - 세션 목록 조회
+모든 세션 목록을 반환합니다 (최신순 정렬).
 
 - **Endpoint:** `GET /sessions/`
 - **Response Body (`SessionListResponse`):**
     ```json
     {
       "sessions": [
-        {"id": 2, "started_at": "2026-01-26T09:00:00", "ended_at": null},
-        {"id": 1, "started_at": "2026-01-25T10:00:00", "ended_at": "2026-01-25T12:30:00"}
+        {
+          "id": 3,
+          "started_at": "2026-01-30T14:00:00.000000",
+          "ended_at": null                         // 진행 중인 세션
+        },
+        {
+          "id": 2,
+          "started_at": "2026-01-30T12:00:00.000000",
+          "ended_at": "2026-01-30T13:30:00.000000"
+        },
+        {
+          "id": 1,
+          "started_at": "2026-01-30T10:00:00.000000",
+          "ended_at": "2026-01-30T11:30:00.000000"
+        }
       ]
     }
     ```
 
-#### 3.5.4 특정 세션 조회
+---
+
+#### GET /sessions/{session_id} - 특정 세션 조회
+특정 세션의 정보를 반환합니다.
 
 - **Endpoint:** `GET /sessions/{session_id}`
+- **Path Parameter:** `session_id` (정수) - 조회할 세션 ID
 - **Response Body (`SessionResponse`):**
     ```json
     {
       "id": 1,
-      "started_at": "2026-01-25T10:00:00",
-      "ended_at": "2026-01-25T12:30:00"
+      "started_at": "2026-01-30T10:00:00.123456",
+      "ended_at": "2026-01-30T11:30:00.654321"
     }
     ```
-- **Error:** 404 Not Found
+- **Error Response:**
+    - `404 Not Found`: 세션이 존재하지 않는 경우
+    ```json
+    {"detail": "Session 999 not found"}
+    ```
 
 ---
 
-### 3.6 시스템 건강 상태 모니터링 (Health)
+## 3. 데이터 모델 요약 (Schemas)
 
-MLOps 모니터링을 위한 시스템 건강 상태 정보를 제공합니다.
+검사 세션의 생성, 종료, 조회 기능을 제공합니다.
 
-- **Endpoint:** `GET /monitoring/health`
-- **Query Parameter:**
-  - `session_id` (선택): `"latest"`, 숫자, 또는 생략
-- **Response Body (`HealthResponse`):**
-    ```json
-    {
-      "status": "warning",           // healthy, warning, critical
-      "timestamp": "2026-01-25T12:00:00",
-      "session_info": {
-        "id": 1,
-        "started_at": "2026-01-25T10:00:00",
-        "ended_at": null,
-        "duration_seconds": 7200.0,
-        "is_active": true
-      },
-      "total_inspections": 100,
-      "normal_count": 85,
-      "defect_count": 15,
-      "defect_rate": 15.0,
-      "total_defects": 22,
-      "avg_defects_per_item": 1.47,
-      "defect_confidence_stats": {
-        "avg_confidence": 0.88,
-        "min_confidence": 0.65,
-        "max_confidence": 0.98,
-        "distribution": {
-          "high": 70,      // ≥0.9
-          "medium": 20,    // 0.8~0.9
-          "low": 8,        // 0.7~0.8
-          "very_low": 2    // <0.7
-        }
-      },
-      "defect_type_stats": [
-        {"defect_type": "scratch", "count": 15, "avg_confidence": 0.88}
-      ],
-      "alerts": [
-        {
-          "level": "warning",
-          "message": "불량률이 경고 수준입니다",
-          "value": 15.0,
-          "threshold": 10.0,
-          "action": "생산 라인 점검 권장"
-        }
-      ]
-    }
-    ```
+### sessions 테이블
+```sql
+CREATE TABLE sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at TEXT NOT NULL,          -- 세션 시작 시간 (ISO 8601)
+    ended_at TEXT                      -- 세션 종료 시간 (ISO 8601, NULL=진행중)
+)
+```
 
-**알림 임계값:**
+### inspection_logs 테이블
+```sql
+CREATE TABLE inspection_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,           -- ISO 8601 형식
+    image_id TEXT NOT NULL,            -- 이미지 고유 ID
+    result TEXT NOT NULL,              -- 'defect' 또는 'normal'
+    detections TEXT,                   -- JSON 배열: [{"defect_type": "", "confidence": 0.0, "bbox": []}]
+    image_path TEXT,                   -- 이미지 저장 경로 (nullable)
+    session_id INTEGER,                -- 세션 ID (FK, nullable)
+    FOREIGN KEY (session_id) REFERENCES sessions(id)
+)
+```
 
-| 카테고리 | Warning | Critical |
-|---------|---------|----------|
-| 불량률 (%) | 10 | 20 |
-| 평균 신뢰도 | 0.85 | 0.75 |
-| 저신뢰도 비율 (%) | 20 | 40 |
-| PCB당 평균 결함 | 2.0 | 3.0 |
+| 모델명 | 분류 | 용도 | 주요 필드 |
+| :--- | :--- | :--- | :--- |
+| **DetectRequest** | Request | POST /detect 요청 | `timestamp`, `image_id`, `image`, `detections[]`, `session_id` |
+| **Detection** | Embedded | 개별 결함 정보 | `defect_type`, `confidence`, `bbox` |
+| **DetectResponse** | Response | POST /detect 응답 | `status`, `id` |
+| **InspectionLogResponse** | Response | GET /latest, Stats의 last_defect | `id`, `timestamp`, `image_id`, `result`, `detections[]`, `image_path`, `session_id` |
+| **StatsResponse** | Response | GET /stats 응답 | `total_inspections`, `normal_count`, `defect_items`, `total_defects`, `defect_rate`, `avg_defects_per_item`, `avg_fps`, `last_defect` |
+| **SessionResponse** | Response | 세션 정보 응답 | `id`, `started_at`, `ended_at` |
+| **SessionCreateResponse** | Response | POST /sessions 응답 | `id`, `started_at` |
+| **SessionListResponse** | Response | GET /sessions 응답 | `sessions[]` |
 
 ---
 
 ### 3.7 알림 조회 (Alerts)
 
-프론트엔드 폴링용 경량 알림 API입니다.
-
-- **Endpoint:** `GET /monitoring/alerts`
-- **Query Parameter:**
-  - `session_id` (선택): `"latest"`, 숫자, 또는 생략
-- **Response Body (`AlertsResponse`):**
-    ```json
-    {
-      "status": "critical",
-      "timestamp": "2026-01-25T12:00:00",
-      "session_info": {
-        "id": 1,
-        "started_at": "2026-01-25T10:00:00",
-        "ended_at": null,
-        "duration_seconds": 7200.0,
-        "is_active": true
-      },
-      "alerts": [
-        {
-          "level": "critical",
-          "message": "불량률이 25.0%로 매우 높습니다",
-          "value": 25.0,
-          "threshold": 20.0,
-          "action": "생산 라인 점검 및 원인 분석 필요"
-        }
-      ],
-      "summary": {
-        "defect_rate": 25.0,
-        "avg_confidence": 0.88
-      }
-    }
-    ```
+### 4.1 이미지 저장 방식
+- **저장 조건**: `image` 데이터가 있는 경우 서버의 `images/defects/` 디렉토리에 저장 (정상/불량 관계없이)
+- **파일명 형식**: `{timestamp}_{image_id}.jpg`
+  - 예: `2026-01-25T04-12-52.046352_09_spur_08.jpg.jpg`
+  - 타임스탬프의 `:` 문자는 `-`로 치환됨 (파일 시스템 호환성)
+- **image_path 생성**: 저장된 이미지 경로가 데이터베이스에 기록됨
+- **이미지 미전송 시**: `image` 필드가 없거나 null인 경우 `image_path=null`
 
 ---
 
