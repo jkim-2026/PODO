@@ -31,7 +31,7 @@ async def receive_detection_result(request: DetectRequest):
 
     try:
         # 1. Handle Image Saving (불량인 경우만)
-        if len(request.detections) > 0 and request.image:
+        if request.image:
             # Decode Base64
             try:
                 image_bytes = image_utils.decode_base64_image(request.image)
