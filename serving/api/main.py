@@ -56,7 +56,6 @@ app.include_router(detect.router)
 app.include_router(stats.router)
 app.include_router(sessions.router)
 app.include_router(images.router)
-app.include_router(images.router)
 app.include_router(monitoring.router)
 app.include_router(feedback.router)
 
