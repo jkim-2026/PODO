@@ -64,9 +64,10 @@ async def init_db():
                 feedback_type TEXT NOT NULL,
                 correct_label TEXT,
                 comment TEXT,
-                created_at TEXT NOT NULL,
+                created_at TEXT,
                 created_by TEXT,
-                FOREIGN KEY (log_id) REFERENCES inspection_logs(id) ON DELETE CASCADE
+                status TEXT DEFAULT 'pending', -- pending, resolved
+                FOREIGN KEY (log_id) REFERENCES inspection_logs (id)
             )
         """)
 
@@ -801,8 +802,44 @@ async def add_feedback(
             "correct_label": correct_label,
             "comment": comment,
             "created_at": created_at,
-            "created_by": created_by
+            "created_by": created_by,
         }
+
+async def get_feedback_queue() -> List[Dict]:
+    """
+    처리되지 않은(resolved=0) 피드백 목록 조회
+    사용자가 신고한 건들을 라벨링 툴에 보여주기 위함
+    """
+    query = """
+    SELECT 
+        f.id as feedback_id,
+        f.log_id,
+        f.feedback_type,
+        f.comment,
+        f.created_at,
+        l.image_path,   -- S3 키 (예: raw/...)
+        l.detections    -- 원본 AI 예측 결과 (JSON)
+    FROM feedback f
+    JOIN inspection_logs l ON f.log_id = l.id
+    WHERE f.status != 'resolved' OR f.status IS NULL
+    ORDER BY f.created_at DESC
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(query)
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+async def resolve_feedback(feedback_id: int):
+    """
+    피드백 상태를 'resolved'로 변경 (재라벨링 완료 시)
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE feedback SET status = 'resolved' WHERE id = ?",
+            (feedback_id,)
+        )
+        await db.commit()
 
 
 async def get_feedback_by_log_id(log_id: int) -> List[Dict]:

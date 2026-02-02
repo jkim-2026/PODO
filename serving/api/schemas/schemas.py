@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field, field_validator, model_validator
-from typing import Optional, List
+from typing import Optional, List, Dict
 
 # --- Shared Models ---
 
@@ -272,3 +272,30 @@ class FeedbackStatsResponse(BaseModel):
     )
     recent_feedback_count: int = Field(..., description="최근 24시간 피드백 개수")
     period_description: str = Field(default="최근 24시간", description="집계 기간")
+
+
+class FeedbackQueueResponse(BaseModel):
+    """
+    라벨링 대기열 아이템
+    """
+    feedback_id: int = Field(..., description="피드백 ID")
+    log_id: int = Field(..., description="로그 ID")
+    image_url: str = Field(..., description="이미지 다운로드 URL")
+    feedback_type: str = Field(..., description="신고 유형")
+    comment: Optional[str] = Field(None, description="사용자 코멘트")
+    created_at: str = Field(..., description="신고 시간")
+    # 기존 AI 예측 정보 (참고용)
+    original_detections: List[Dict] = Field(default_factory=list, description="기존 AI 예측 결과")
+
+
+class RelabelRequest(BaseModel):
+    """
+    재라벨링 승인 요청 데이터
+    """
+    feedback_id: int = Field(..., description="대상 피드백 ID")
+    final_class_id: int = Field(..., description="확정된 클래스 ID")
+    final_bbox: List[float] = Field(..., description="확정된 좌표 [x_center, y_center, w, h] Normalized")
+    
+    # 좌표 정규화를 위해 필요할 수 있음 (선택)
+    image_width: Optional[int] = Field(None, description="이미지 너비")
+    image_height: Optional[int] = Field(None, description="이미지 높이")
