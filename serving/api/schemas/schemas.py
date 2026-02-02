@@ -37,6 +37,7 @@ class DetectRequest(BaseModel):
     image_id: str = Field(..., description="Image Identifier, e.g., 'PCB_001234'")
     image: Optional[str] = Field(None, description="Base64 encoded image string (optional)")
     detections: List[Detection] = Field(default_factory=list, description="결함 목록 (빈 배열 = 정상)")
+    session_id: Optional[int] = Field(None, description="세션 ID (optional)")
 
 
 # --- Response Models ---
@@ -63,6 +64,7 @@ class InspectionLogResponse(BaseModel):
     result: str = Field(..., description="'defect' or 'normal'")
     detections: List[Detection] = Field(default_factory=list, description="List of detected defects")
     image_path: Optional[str] = Field(None, description="Path to saved image file")
+    session_id: Optional[int] = Field(None, description="세션 ID")
     # 기존 confidence, defect_type, bbox 필드는 detections 리스트 안에 포함됨
 
 
@@ -78,3 +80,29 @@ class StatsResponse(BaseModel):
     avg_defects_per_item: float = Field(..., description="불량 PCB당 평균 결함 개수")
     avg_fps: float = Field(..., description="Average processing/transmission FPS")
     last_defect: Optional[InspectionLogResponse] = Field(None, description="Most recent defect log entry")
+
+
+# ===== 세션 관련 스키마 =====
+
+class SessionResponse(BaseModel):
+    """
+    세션 정보 응답
+    """
+    id: int = Field(..., description="세션 ID")
+    started_at: str = Field(..., description="세션 시작 시간 (ISO 8601)")
+    ended_at: Optional[str] = Field(None, description="세션 종료 시간 (ISO 8601)")
+
+
+class SessionCreateResponse(BaseModel):
+    """
+    세션 생성 응답
+    """
+    id: int = Field(..., description="생성된 세션 ID")
+    started_at: str = Field(..., description="세션 시작 시간 (ISO 8601)")
+
+
+class SessionListResponse(BaseModel):
+    """
+    세션 목록 응답
+    """
+    sessions: List[SessionResponse] = Field(default_factory=list, description="세션 목록")

@@ -1,10 +1,11 @@
+# CI/CD 테스트
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
 # Import routers, database, and config
-from routers import detect, stats
+from routers import detect, stats, sessions
 from database.db import init_db
 from config import settings
 
@@ -40,6 +41,7 @@ app.mount("/images", StaticFiles(directory="images"), name="images")
 # Apply Routers
 app.include_router(detect.router)
 app.include_router(stats.router)
+app.include_router(sessions.router)
 
 
 @app.get("/")
