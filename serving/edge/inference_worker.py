@@ -91,10 +91,26 @@ class InferenceWorker(threading.Thread):
 
     def _create_payload(self, crop, result):
         """추론 결과를 백엔드 스펙에 맞는 페이로드로 구성"""
+        
+        # [NEW] 강제 매핑 테이블 (QAT 엔진 메타데이터 유실 대응)
+        QA_LABELS = {
+            0: "Missing Hole",
+            1: "Mouse Bite",
+            2: "Open Circuit",
+            3: "Short",
+            4: "Spur",
+            5: "Spurious Copper"
+        }
+        
         detections = []
         for box in result.boxes:
+            # 클래스 ID 확인
+            cls_id = int(box.cls[0])
+            # 매핑 시도 -> 없으면 기존 names -> 없으면 classN
+            defect_name = QA_LABELS.get(cls_id, result.names.get(cls_id, f"class{cls_id}"))
+            
             detections.append({
-                "defect_type": result.names[int(box.cls[0])],
+                "defect_type": defect_name,  # 수정된 이름 사용
                 "confidence": round(float(box.conf[0]), 4),
                 "bbox": [int(float(x)) for x in box.xyxy[0].tolist()]
             })
@@ -113,7 +129,3 @@ class InferenceWorker(threading.Thread):
             "image": img_base64,
             "detections": detections
         }
-
-    def stop(self):
-        self.running = False
-        print("[InferenceWorker] 중지 중...")
