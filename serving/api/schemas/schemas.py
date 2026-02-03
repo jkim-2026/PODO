@@ -191,75 +191,7 @@ class AlertsResponse(BaseModel):
     summary: dict = Field(..., description="간단한 요약 (defect_rate, avg_confidence)")
 
 
-# ===== 피드백 관련 스키마 =====
-
-class FeedbackRequest(BaseModel):
-    """
-    피드백 생성 요청
-    """
-    log_id: int = Field(..., gt=0, description="검사 로그 ID")
-    feedback_type: str = Field(..., description="피드백 종류 (false_positive, false_negative, tp_wrong_class)")
-    correct_label: Optional[str] = Field(None, description="올바른 라벨 (tp_wrong_class 시 필수)")
-    comment: Optional[str] = Field(None, max_length=500, description="추가 설명")
-    created_by: Optional[str] = Field(None, max_length=100, description="작성자")
-    target_bbox: Optional[List[int]] = Field(
-        None,
-        description="대상 bbox [x1, y1, x2, y2]"
-    )
-
-    @field_validator('feedback_type')
-    @classmethod
-    def validate_feedback_type(cls, v: str) -> str:
-        allowed = {'false_positive', 'false_negative', 'tp_wrong_class'}
-        if v not in allowed:
-            raise ValueError(f"feedback_type must be one of {allowed}")
-        return v
-
-    @model_validator(mode='after')
-    def validate_feedback_requirements(self):
-        from config.settings import ALLOWED_FEEDBACK_LABELS
-
-        # 1. tp_wrong_class → correct_label 필수
-        if self.feedback_type == 'tp_wrong_class':
-            if not self.correct_label or self.correct_label.strip() == '':
-                raise ValueError("correct_label required for tp_wrong_class")
-            # 허용값 검증
-            if self.correct_label not in ALLOWED_FEEDBACK_LABELS:
-                raise ValueError(
-                    f"correct_label must be one of {ALLOWED_FEEDBACK_LABELS}, got '{self.correct_label}'"
-                )
-
-        # 2. false_positive/tp_wrong_class → target_bbox 필수
-        if self.feedback_type in ['false_positive', 'tp_wrong_class']:
-            if not self.target_bbox:
-                raise ValueError(f"target_bbox required for {self.feedback_type}")
-
-        # 3. target_bbox 형식 검증
-        if self.target_bbox:
-            if len(self.target_bbox) != 4:
-                raise ValueError("target_bbox must have 4 elements [x1, y1, x2, y2]")
-            if self.target_bbox[0] >= self.target_bbox[2]:
-                raise ValueError("x1 must be less than x2")
-            if self.target_bbox[1] >= self.target_bbox[3]:
-                raise ValueError("y1 must be less than y3")
-
-        return self
-
-
-class FeedbackResponse(BaseModel):
-    """
-    피드백 생성 응답
-    """
-    id: int = Field(..., description="피드백 ID")
-    log_id: int = Field(..., description="검사 로그 ID")
-    feedback_type: str = Field(..., description="피드백 종류")
-    correct_label: Optional[str] = Field(None, description="올바른 라벨")
-    comment: Optional[str] = Field(None, description="추가 설명")
-    created_at: str = Field(..., description="생성 시각 (ISO 8601)")
-    created_by: Optional[str] = Field(None, description="작성자")
-    target_bbox: Optional[List[int]] = Field(None, description="대상 bbox [x1, y1, x2, y2]")
-    status: str = Field(default="ok", description="응답 상태")
-
+# ===== 피드백 관련 스키마 (Bulk 전용) =====
 
 class FeedbackItem(BaseModel):
     """
@@ -433,14 +365,3 @@ class FeedbackQueueResponse(BaseModel):
     target_bbox: Optional[List[int]] = Field(None, description="대상 bbox [x1, y1, x2, y2]")
 
 
-class RelabelRequest(BaseModel):
-    """
-    재라벨링 승인 요청 데이터
-    """
-    feedback_id: int = Field(..., description="대상 피드백 ID")
-    final_class_id: int = Field(..., description="확정된 클래스 ID")
-    final_bbox: List[float] = Field(..., description="확정된 좌표 [x_center, y_center, w, h] Normalized")
-    
-    # 좌표 정규화를 위해 필요할 수 있음 (선택)
-    image_width: Optional[int] = Field(None, description="이미지 너비")
-    image_height: Optional[int] = Field(None, description="이미지 높이")

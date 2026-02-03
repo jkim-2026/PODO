@@ -1,7 +1,5 @@
 from fastapi import APIRouter, HTTPException, status
 from schemas.schemas import (
-    FeedbackRequest,
-    FeedbackResponse,
     FeedbackStatsResponse,
     ImageStats,
     BboxStats,
@@ -9,7 +7,6 @@ from schemas.schemas import (
     FeedbackTypeStats,
     ClassConfusion,
     FeedbackQueueResponse,
-    RelabelRequest,
     BulkFeedbackRequest,
     BulkFeedbackResponse
 )
@@ -90,56 +87,6 @@ def normalize_bbox(bbox_px: List[int], width: int, height: int) -> List[float]:
 
 
 # ===== API Endpoints =====
-
-@router.post("/", response_model=FeedbackResponse, status_code=status.HTTP_201_CREATED)
-async def create_feedback(request: FeedbackRequest):
-    """
-    검사 결과에 대한 피드백 생성
-
-    피드백 종류:
-    - false_positive: 정상인데 불량으로 오탐
-    - false_negative: 불량인데 정상으로 통과
-    - label_correction: 결함은 맞지만 종류가 틀림
-
-    Args:
-        request: 피드백 요청 데이터
-
-    Returns:
-        생성된 피드백 정보
-
-    Raises:
-        HTTPException 404: 존재하지 않는 log_id
-        HTTPException 422: 유효성 검증 실패
-        HTTPException 500: 서버 에러
-    """
-    try:
-        feedback_data = await db.add_feedback(
-            log_id=request.log_id,
-            feedback_type=request.feedback_type,
-            correct_label=request.correct_label,
-            comment=request.comment,
-            created_by=request.created_by,
-            target_bbox=request.target_bbox
-        )
-
-        logger.info(
-            f"[피드백] log_id={request.log_id}, "
-            f"type={request.feedback_type}, "
-            f"target_bbox={request.target_bbox}, "
-            f"by={request.created_by or 'anonymous'}"
-        )
-
-        return FeedbackResponse(**feedback_data, status="ok")
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"[피드백 실패] {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to create feedback: {str(e)}"
-        )
-
 
 @router.post("/bulk", response_model=BulkFeedbackResponse, status_code=status.HTTP_201_CREATED)
 async def create_bulk_feedback(request: BulkFeedbackRequest):
@@ -453,61 +400,6 @@ async def get_labeling_queue(session_id: Optional[str] = None):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to get queue: {str(e)}"
-        )
-
-@router.post("/approve")
-async def approve_relabeling(request: RelabelRequest):
-    """
-    재라벨링 승인 및 저장
-    1. S3 refined 폴더에 이미지와 라벨 저장
-    2. DB 피드백 상태 완료 처리
-    """
-    try:
-        # 1. 대상 로그 정보 가져오기 (이미지 경로 필요)
-        # 큐에서 조회했던 정보 다시 조회하거나, log_id를 통해 조회
-        # 여기서는 feedback_id로 조회하는 함수가 필요하지만, 
-        # 간단히 queue 쿼리를 재활용하거나 새로 만듭니다.
-        # 효율성을 위해 db.get_feedback_queue() 로직을 일부 활용하거나
-        # get_log_by_feedback_id 같은 함수가 있으면 좋음.
-        # 일단 여기서는 구현 편의상 로그 ID를 통해 이미지 경로를 찾는다고 가정하거나 
-        # DB에 get_feedback_detail 함수를 추가하는 것이 정석입니다.
-        
-        # 임시: queue 목록에서 해당 ID 찾기 (비효율적이지만 안전)
-        # 실제로는 db.get_feedback_by_id(request.feedback_id) 필요
-        # db.py 수정 없이 가려면... 
-        # -> 차라리 db.py에 get_image_path_by_feedback_id 추가하는게 나음.
-        # 하지만 스텝 최소화를 위해 queue 쿼리에서 필터링
-        
-        queue_items = await db.get_feedback_queue()
-        target_item = next((item for item in queue_items if item["feedback_id"] == request.feedback_id), None)
-        
-        if not target_item:
-            raise HTTPException(status_code=404, detail="Feedback not found or already resolved")
-
-        image_path = target_item["image_path"] # 예: raw/2026.../img.jpg
-        filename_stem = image_path.split("/")[-1].replace(".jpg", "") + f"_refined_{request.feedback_id}"
-
-        # 2. S3 저장 (Copy & Label)
-        await s3_dataset.save_refined_data(
-            original_s3_key=image_path,
-            class_id=request.final_class_id,
-            bbox=request.final_bbox,
-            filename_stem=filename_stem
-        )
-
-        # 3. DB 상태 업데이트
-        await db.resolve_feedback(request.feedback_id)
-
-        logger.info(f"[재라벨링 승인] ID={request.feedback_id} -> S3 Refined Saved")
-        return {"status": "ok", "message": "Relabeling approved and saved"}
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"[승인 실패] {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to approve: {str(e)}"
         )
 
 @router.get("/export")
