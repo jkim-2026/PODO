@@ -438,6 +438,9 @@ const DashboardUpdater = {
 
     // Session Statistics Chart Update
     updateSessionChart: async function () {
+        // Health 페이지에는 trends 차트가 없으므로 체크
+        if (!this.charts.trends) return;
+
         try {
             // 최근 10개 세션 가져오기
             const sessionsData = await ApiClient.getSessions();
