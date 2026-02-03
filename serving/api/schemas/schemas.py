@@ -198,32 +198,51 @@ class FeedbackRequest(BaseModel):
     피드백 생성 요청
     """
     log_id: int = Field(..., gt=0, description="검사 로그 ID")
-    feedback_type: str = Field(..., description="피드백 종류 (false_positive, false_negative, label_correction)")
-    correct_label: Optional[str] = Field(None, description="올바른 라벨 (label_correction 시 필수)")
+    feedback_type: str = Field(..., description="피드백 종류 (false_positive, false_negative, tp_wrong_class)")
+    correct_label: Optional[str] = Field(None, description="올바른 라벨 (tp_wrong_class 시 필수)")
     comment: Optional[str] = Field(None, max_length=500, description="추가 설명")
     created_by: Optional[str] = Field(None, max_length=100, description="작성자")
+    target_bbox: Optional[List[int]] = Field(
+        None,
+        description="대상 bbox [x1, y1, x2, y2]"
+    )
 
     @field_validator('feedback_type')
     @classmethod
     def validate_feedback_type(cls, v: str) -> str:
-        allowed = {'false_positive', 'false_negative', 'label_correction'}
+        allowed = {'false_positive', 'false_negative', 'tp_wrong_class'}
         if v not in allowed:
             raise ValueError(f"feedback_type must be one of {allowed}")
         return v
 
     @model_validator(mode='after')
-    def validate_correct_label_requirement(self):
+    def validate_feedback_requirements(self):
         from config.settings import ALLOWED_FEEDBACK_LABELS
 
-        # label_correction 타입인 경우 correct_label 필수 및 검증
-        if self.feedback_type == 'label_correction':
+        # 1. tp_wrong_class → correct_label 필수
+        if self.feedback_type == 'tp_wrong_class':
             if not self.correct_label or self.correct_label.strip() == '':
-                raise ValueError("correct_label required for label_correction")
+                raise ValueError("correct_label required for tp_wrong_class")
             # 허용값 검증
             if self.correct_label not in ALLOWED_FEEDBACK_LABELS:
                 raise ValueError(
                     f"correct_label must be one of {ALLOWED_FEEDBACK_LABELS}, got '{self.correct_label}'"
                 )
+
+        # 2. false_positive/tp_wrong_class → target_bbox 필수
+        if self.feedback_type in ['false_positive', 'tp_wrong_class']:
+            if not self.target_bbox:
+                raise ValueError(f"target_bbox required for {self.feedback_type}")
+
+        # 3. target_bbox 형식 검증
+        if self.target_bbox:
+            if len(self.target_bbox) != 4:
+                raise ValueError("target_bbox must have 4 elements [x1, y1, x2, y2]")
+            if self.target_bbox[0] >= self.target_bbox[2]:
+                raise ValueError("x1 must be less than x2")
+            if self.target_bbox[1] >= self.target_bbox[3]:
+                raise ValueError("y1 must be less than y3")
+
         return self
 
 
@@ -238,7 +257,85 @@ class FeedbackResponse(BaseModel):
     comment: Optional[str] = Field(None, description="추가 설명")
     created_at: str = Field(..., description="생성 시각 (ISO 8601)")
     created_by: Optional[str] = Field(None, description="작성자")
+    target_bbox: Optional[List[int]] = Field(None, description="대상 bbox [x1, y1, x2, y2]")
     status: str = Field(default="ok", description="응답 상태")
+
+
+class FeedbackItem(BaseModel):
+    """
+    개별 bbox 피드백 (bulk 요청의 단위)
+    """
+    feedback_type: str
+    correct_label: Optional[str] = None
+    comment: Optional[str] = Field(None, max_length=500)
+    target_bbox: Optional[List[int]] = None
+
+    @field_validator('feedback_type')
+    @classmethod
+    def validate_feedback_type(cls, v: str) -> str:
+        allowed = {'false_positive', 'false_negative', 'tp_wrong_class'}
+        if v not in allowed:
+            raise ValueError(f"feedback_type must be one of {allowed}")
+        return v
+
+    @model_validator(mode='after')
+    def validate_feedback_requirements(self):
+        from config.settings import ALLOWED_FEEDBACK_LABELS
+
+        # FeedbackRequest와 동일한 검증 로직 재사용 (DRY 원칙)
+        if self.feedback_type == 'tp_wrong_class':
+            if not self.correct_label:
+                raise ValueError("correct_label required for tp_wrong_class")
+            if self.correct_label not in ALLOWED_FEEDBACK_LABELS:
+                raise ValueError(f"correct_label must be one of {ALLOWED_FEEDBACK_LABELS}")
+
+        if self.feedback_type in ['false_positive', 'tp_wrong_class']:
+            if not self.target_bbox:
+                raise ValueError(f"target_bbox required for {self.feedback_type}")
+
+        if self.target_bbox:
+            if len(self.target_bbox) != 4:
+                raise ValueError("target_bbox must have 4 elements [x1, y1, x2, y2]")
+            if self.target_bbox[0] >= self.target_bbox[2]:
+                raise ValueError("x1 must be less than x2")
+            if self.target_bbox[1] >= self.target_bbox[3]:
+                raise ValueError("y1 must be less than y2")
+
+        return self
+
+
+class BulkFeedbackRequest(BaseModel):
+    """
+    다중 bbox 피드백 생성 요청 (자동 재라벨링)
+    """
+    log_id: int = Field(..., gt=0)
+    image_width: int = Field(..., gt=0, description="크롭된 이미지 너비 (픽셀)")
+    image_height: int = Field(..., gt=0, description="크롭된 이미지 높이 (픽셀)")
+    feedbacks: List[FeedbackItem] = Field(..., description="피드백 목록 (피드백 없는 bbox는 제외)")
+    false_negative_memo: Optional[str] = Field(None, max_length=500, description="FALSE_NEGATIVE 메모")
+    created_by: Optional[str] = Field(None, max_length=100)
+
+    @field_validator('feedbacks')
+    @classmethod
+    def validate_feedbacks_count(cls, v: List[FeedbackItem]) -> List[FeedbackItem]:
+        # 빈 배열 허용 (모든 bbox가 정답일 수 있음)
+        if len(v) > 100:
+            raise ValueError(f"feedbacks cannot exceed 100 items, got {len(v)}")
+        return v
+
+
+class BulkFeedbackResponse(BaseModel):
+    """
+    다중 bbox 피드백 생성 응답 (자동 재라벨링)
+    """
+    status: str = Field(default="ok")
+    log_id: int
+    feedback_ids: List[int] = Field(..., description="생성된 피드백 ID 목록")
+    saved_to_s3: bool = Field(..., description="S3 refined/ 폴더 저장 여부")
+    refined_path: Optional[str] = Field(None, description="refined/ 이미지 경로")
+    final_label_count: int = Field(..., description="최종 라벨 개수")
+    false_negative_pending: bool = Field(..., description="FALSE_NEGATIVE 대기 중 여부")
+    created_at: str
 
 
 class FeedbackTypeStats(BaseModel):
@@ -286,6 +383,7 @@ class FeedbackQueueResponse(BaseModel):
     created_at: str = Field(..., description="신고 시간")
     # 기존 AI 예측 정보 (참고용)
     original_detections: List[Dict] = Field(default_factory=list, description="기존 AI 예측 결과")
+    target_bbox: Optional[List[int]] = Field(None, description="대상 bbox [x1, y1, x2, y2]")
 
 
 class RelabelRequest(BaseModel):

@@ -67,6 +67,7 @@ async def init_db():
                 created_at TEXT,
                 created_by TEXT,
                 status TEXT DEFAULT 'pending', -- pending, resolved
+                target_bbox TEXT,
                 FOREIGN KEY (log_id) REFERENCES inspection_logs (id)
             )
         """)
@@ -81,6 +82,29 @@ async def init_db():
         await db.execute(
             "CREATE INDEX IF NOT EXISTS idx_feedback_created_at ON feedback(created_at)"
         )
+
+        # 기존 테이블에 target_bbox 컬럼이 없으면 추가 (마이그레이션)
+        try:
+            await db.execute("ALTER TABLE feedback ADD COLUMN target_bbox TEXT")
+        except Exception:
+            # 컬럼이 이미 존재하면 무시
+            pass
+
+        # 검증 완료 표시 컬럼 추가 (마이그레이션)
+        try:
+            await db.execute("ALTER TABLE inspection_logs ADD COLUMN is_verified BOOLEAN DEFAULT FALSE")
+        except Exception:
+            pass
+
+        try:
+            await db.execute("ALTER TABLE inspection_logs ADD COLUMN verified_at TEXT")
+        except Exception:
+            pass
+
+        try:
+            await db.execute("ALTER TABLE inspection_logs ADD COLUMN verified_by TEXT")
+        except Exception:
+            pass
 
         await db.commit()
 
@@ -763,17 +787,19 @@ async def add_feedback(
     feedback_type: str,
     correct_label: Optional[str] = None,
     comment: Optional[str] = None,
-    created_by: Optional[str] = None
+    created_by: Optional[str] = None,
+    target_bbox: Optional[List[int]] = None
 ) -> Dict:
     """
     피드백 저장
 
     Args:
         log_id: 검사 로그 ID
-        feedback_type: 피드백 종류 (false_positive, false_negative, label_correction)
-        correct_label: 올바른 라벨 (label_correction 시 필수)
+        feedback_type: 피드백 종류 (false_positive, false_negative, tp_wrong_class)
+        correct_label: 올바른 라벨 (tp_wrong_class 시 필수)
         comment: 추가 설명
         created_by: 작성자
+        target_bbox: 대상 bbox [x1, y1, x2, y2] (false_positive, tp_wrong_class 시 필수)
 
     Returns:
         저장된 피드백 데이터
@@ -785,14 +811,17 @@ async def add_feedback(
     if not await log_exists(log_id):
         raise HTTPException(status_code=404, detail=f"Inspection log {log_id} not found")
 
+    # target_bbox를 JSON 문자열로 직렬화
+    target_bbox_json = json.dumps(target_bbox) if target_bbox else None
+
     # 피드백 저장
     created_at = datetime.now().isoformat()
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
             """INSERT INTO feedback
-            (log_id, feedback_type, correct_label, comment, created_at, created_by)
-            VALUES (?, ?, ?, ?, ?, ?)""",
-            (log_id, feedback_type, correct_label, comment, created_at, created_by)
+            (log_id, feedback_type, correct_label, comment, created_at, created_by, target_bbox)
+            VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (log_id, feedback_type, correct_label, comment, created_at, created_by, target_bbox_json)
         )
         await db.commit()
         return {
@@ -803,6 +832,7 @@ async def add_feedback(
             "comment": comment,
             "created_at": created_at,
             "created_by": created_by,
+            "target_bbox": target_bbox
         }
 
 async def get_feedback_queue() -> List[Dict]:
@@ -811,12 +841,13 @@ async def get_feedback_queue() -> List[Dict]:
     사용자가 신고한 건들을 라벨링 툴에 보여주기 위함
     """
     query = """
-    SELECT 
+    SELECT
         f.id as feedback_id,
         f.log_id,
         f.feedback_type,
         f.comment,
         f.created_at,
+        f.target_bbox,
         l.image_path,   -- S3 키 (예: raw/...)
         l.detections    -- 원본 AI 예측 결과 (JSON)
     FROM feedback f
@@ -959,3 +990,123 @@ async def get_feedback_stats() -> Dict:
             "by_defect_type": by_defect_type,
             "recent_feedback_count": recent_feedback_count
         }
+
+
+async def add_bulk_feedback(
+    log_id: int,
+    feedbacks: List[Dict],
+    created_by: Optional[str] = None
+) -> Dict:
+    """
+    다중 bbox 피드백 저장 (트랜잭션 원자성 보장)
+
+    Args:
+        log_id: 검사 로그 ID
+        feedbacks: 피드백 목록 (FeedbackItem.model_dump() 결과)
+        created_by: 작성자
+
+    Returns:
+        {
+            "log_id": int,
+            "feedback_ids": List[int],
+            "created_count": int,
+            "created_at": str
+        }
+
+    Raises:
+        HTTPException 404: log_id 없음
+        HTTPException 500: 트랜잭션 실패
+    """
+    # 1. log_id 존재 검증
+    if not await log_exists(log_id):
+        raise HTTPException(status_code=404, detail=f"Inspection log {log_id} not found")
+
+    created_at = datetime.now().isoformat()
+    feedback_ids = []
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        try:
+            # 2. BEGIN TRANSACTION (원자성)
+            await db.execute("BEGIN TRANSACTION")
+
+            # 3. Loop: N개 INSERT
+            for feedback_item in feedbacks:
+                target_bbox_json = json.dumps(feedback_item["target_bbox"]) \
+                    if feedback_item.get("target_bbox") else None
+
+                cursor = await db.execute(
+                    """INSERT INTO feedback
+                    (log_id, feedback_type, correct_label, comment, created_at, created_by, target_bbox)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        log_id,
+                        feedback_item["feedback_type"],
+                        feedback_item.get("correct_label"),
+                        feedback_item.get("comment"),
+                        created_at,
+                        created_by,
+                        target_bbox_json
+                    )
+                )
+                feedback_ids.append(cursor.lastrowid)
+
+            # 4. COMMIT (성공)
+            await db.commit()
+
+            return {
+                "log_id": log_id,
+                "feedback_ids": feedback_ids,
+                "created_count": len(feedback_ids),
+                "created_at": created_at
+            }
+
+        except Exception as e:
+            # 5. ROLLBACK (실패)
+            await db.execute("ROLLBACK")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to create bulk feedback: {str(e)}"
+            )
+
+
+async def mark_as_verified(log_id: int, verified_by: Optional[str] = None) -> None:
+    """
+    검사 로그를 검증 완료 표시
+
+    Args:
+        log_id: 검사 로그 ID
+        verified_by: 검증자 (선택)
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """UPDATE inspection_logs
+               SET is_verified = 1,
+                   verified_at = ?,
+                   verified_by = ?
+               WHERE id = ?""",
+            (datetime.now().isoformat(), verified_by, log_id)
+        )
+        await db.commit()
+
+
+async def get_inspection_log(log_id: int) -> Optional[Dict]:
+    """
+    특정 검사 로그 조회
+
+    Args:
+        log_id: 검사 로그 ID
+
+    Returns:
+        검사 로그 데이터 (detections는 JSON 문자열 그대로)
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM inspection_logs WHERE id = ?",
+            (log_id,)
+        )
+        row = await cursor.fetchone()
+
+        if row:
+            return dict(row)
+        return None

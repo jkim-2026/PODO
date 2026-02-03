@@ -6,19 +6,87 @@ from schemas.schemas import (
     FeedbackTypeStats,
     DefectTypeFeedbackStats,
     FeedbackQueueResponse,
-    RelabelRequest
+    RelabelRequest,
+    BulkFeedbackRequest,
+    BulkFeedbackResponse
 )
 from database import db
 from utils import s3_dataset
 from utils.image_utils import generate_presigned_url
+from config.settings import get_class_id
+from datetime import datetime
 import logging
 import json
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 logger = logging.getLogger("uvicorn")
 
 router = APIRouter(prefix="/feedback", tags=["Feedback"])
 
+
+# ===== Helper Functions =====
+
+def bbox_equals(bbox1: List[int], bbox2: List[int], tolerance: int = 2) -> bool:
+    """
+    두 bbox가 동일한지 확인 (오차 허용)
+
+    Args:
+        bbox1: [x1, y1, x2, y2]
+        bbox2: [x1, y1, x2, y2]
+        tolerance: 허용 오차 (픽셀)
+
+    Returns:
+        동일 여부
+    """
+    if not bbox1 or not bbox2:
+        return False
+    if len(bbox1) != 4 or len(bbox2) != 4:
+        return False
+    return all(abs(a - b) <= tolerance for a, b in zip(bbox1, bbox2))
+
+
+def find_feedback_by_bbox(
+    feedbacks: List[Dict],
+    bbox: List[int]
+) -> Optional[Dict]:
+    """
+    target_bbox로 피드백 찾기 (좌표 매칭)
+
+    Args:
+        feedbacks: 피드백 목록 (dict)
+        bbox: 원본 bbox [x1, y1, x2, y2]
+
+    Returns:
+        매칭된 피드백 또는 None
+    """
+    for feedback in feedbacks:
+        if "target_bbox" in feedback and feedback["target_bbox"]:
+            if bbox_equals(feedback["target_bbox"], bbox, tolerance=2):
+                return feedback
+    return None
+
+
+def normalize_bbox(bbox_px: List[int], width: int, height: int) -> List[float]:
+    """
+    픽셀 좌표 → 정규화 좌표 (YOLO 형식)
+
+    Args:
+        bbox_px: [x1, y1, x2, y2] 픽셀 좌표
+        width: 이미지 너비
+        height: 이미지 높이
+
+    Returns:
+        [x_center, y_center, w, h] 정규화된 좌표 (0.0~1.0)
+    """
+    x1, y1, x2, y2 = bbox_px
+    x_center = ((x1 + x2) / 2) / width
+    y_center = ((y1 + y2) / 2) / height
+    w = (x2 - x1) / width
+    h = (y2 - y1) / height
+    return [x_center, y_center, w, h]
+
+
+# ===== API Endpoints =====
 
 @router.post("/", response_model=FeedbackResponse, status_code=status.HTTP_201_CREATED)
 async def create_feedback(request: FeedbackRequest):
@@ -47,12 +115,14 @@ async def create_feedback(request: FeedbackRequest):
             feedback_type=request.feedback_type,
             correct_label=request.correct_label,
             comment=request.comment,
-            created_by=request.created_by
+            created_by=request.created_by,
+            target_bbox=request.target_bbox
         )
 
         logger.info(
             f"[피드백] log_id={request.log_id}, "
             f"type={request.feedback_type}, "
+            f"target_bbox={request.target_bbox}, "
             f"by={request.created_by or 'anonymous'}"
         )
 
@@ -65,6 +135,196 @@ async def create_feedback(request: FeedbackRequest):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to create feedback: {str(e)}"
+        )
+
+
+@router.post("/bulk", response_model=BulkFeedbackResponse, status_code=status.HTTP_201_CREATED)
+async def create_bulk_feedback(request: BulkFeedbackRequest):
+    """
+    다중 bbox 피드백 생성 + 자동 S3 저장 (재라벨링 승인 스킵)
+
+    1개 PCB(log_id)에 대해 여러 bbox에 대한 피드백을 제출하고,
+    즉시 S3 refined/ 폴더에 학습 데이터를 저장합니다.
+
+    플로우:
+    1. inspection_logs 조회 (원본 detections)
+    2. 각 bbox에 대해 피드백 찾기 (target_bbox 매칭)
+    3. 최종 라벨 생성
+       - 피드백 없음 → 원본 유지 (암묵적 TP)
+       - tp_wrong_class → 클래스 수정
+       - false_positive → 삭제
+    4. S3 refined/ 저장 (이미지 복사 + 라벨 생성)
+    5. DB 피드백 저장 (피드백 있는 bbox만)
+    6. FALSE_NEGATIVE 처리 (있으면)
+    7. inspection_logs.is_verified = true
+
+    Example:
+        POST /feedback/bulk
+        {
+          "log_id": 42,
+          "image_width": 1200,
+          "image_height": 760,
+          "feedbacks": [
+            {
+              "target_bbox": [50, 60, 70, 80],
+              "feedback_type": "false_positive",
+              "comment": "먼지 오탐"
+            },
+            {
+              "target_bbox": [100, 110, 120, 130],
+              "feedback_type": "tp_wrong_class",
+              "correct_label": "scratch",
+              "comment": "hole이 아니라 scratch"
+            }
+          ],
+          "false_negative_memo": "좌측 하단 scratch 누락",
+          "created_by": "qa_team"
+        }
+
+    Args:
+        request: 다중 피드백 요청 데이터
+
+    Returns:
+        생성된 피드백 ID 목록, S3 저장 정보, 최종 라벨 개수
+
+    Raises:
+        HTTPException 404: 존재하지 않는 log_id
+        HTTPException 500: S3 저장 실패, DB 트랜잭션 실패
+    """
+    try:
+        # 1. 원본 데이터 조회
+        log = await db.get_inspection_log(request.log_id)
+        if not log:
+            raise HTTPException(status_code=404, detail=f"Inspection log {request.log_id} not found")
+
+        original_detections = json.loads(log["detections"]) if log.get("detections") else []
+        image_s3_key = log.get("image_path")  # "raw/20260203/xxx.jpg"
+
+        if not image_s3_key:
+            raise HTTPException(status_code=400, detail=f"Log {request.log_id} has no image_path")
+
+        # 2. 피드백 데이터 변환
+        feedbacks_data = [item.model_dump() for item in request.feedbacks]
+
+        # 3. 최종 라벨 생성
+        final_labels = []
+        feedback_ids = []
+
+        for detection in original_detections:
+            bbox = detection["bbox"]
+
+            # target_bbox로 피드백 찾기
+            feedback = find_feedback_by_bbox(feedbacks_data, bbox)
+
+            if feedback is None:
+                # 피드백 없음 → 원본 그대로 유지 (암묵적 TP)
+                final_labels.append({
+                    "class_id": get_class_id(detection["defect_type"]),
+                    "bbox": normalize_bbox(bbox, request.image_width, request.image_height)
+                })
+                # DB 저장 안 함
+
+            elif feedback["feedback_type"] == "false_positive":
+                # FP → 라벨에서 제외 (삭제)
+                # DB에는 저장 (피드백 기록)
+                pass  # final_labels에 추가 안 함 = 삭제
+
+            elif feedback["feedback_type"] == "tp_wrong_class":
+                # 클래스만 수정
+                final_labels.append({
+                    "class_id": get_class_id(feedback["correct_label"]),
+                    "bbox": normalize_bbox(bbox, request.image_width, request.image_height)
+                })
+
+        # 4. S3 refined/ 저장
+        refined_path = None
+        saved_to_s3 = False
+
+        if final_labels or len(original_detections) > 0:
+            try:
+                refined_path = await s3_dataset.save_to_refined(
+                    image_s3_key=image_s3_key,
+                    labels=final_labels,
+                    log_id=request.log_id
+                )
+                saved_to_s3 = True
+            except Exception as e:
+                logger.error(f"[S3] Failed to save refined data for log_id={request.log_id}: {e}")
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to save to S3: {str(e)}"
+                )
+
+        # 5. DB 피드백 저장 (피드백 있는 bbox만)
+        for feedback_item in feedbacks_data:
+            if feedback_item["feedback_type"] in ["false_positive", "tp_wrong_class"]:
+                feedback_data = await db.add_feedback(
+                    log_id=request.log_id,
+                    feedback_type=feedback_item["feedback_type"],
+                    target_bbox=feedback_item.get("target_bbox"),
+                    correct_label=feedback_item.get("correct_label"),
+                    comment=feedback_item.get("comment"),
+                    created_by=request.created_by
+                )
+                feedback_ids.append(feedback_data["id"])
+
+        # 6. FALSE_NEGATIVE 처리
+        fn_pending = False
+        if request.false_negative_memo:
+            # DB에 저장
+            fn_data = await db.add_feedback(
+                log_id=request.log_id,
+                feedback_type="false_negative",
+                comment=request.false_negative_memo,
+                created_by=request.created_by
+            )
+            feedback_ids.append(fn_data["id"])
+
+            # needs_labeling/에 복사
+            try:
+                await s3_dataset.copy_to_needs_labeling(
+                    image_s3_key=image_s3_key,
+                    log_id=request.log_id,
+                    memo=request.false_negative_memo,
+                    original_detections=original_detections
+                )
+                fn_pending = True
+            except Exception as e:
+                logger.error(f"[S3] Failed to copy to needs_labeling for log_id={request.log_id}: {e}")
+                # FALSE_NEGATIVE는 실패해도 계속 진행 (DB에는 저장됨)
+
+        # 7. 검증 완료 표시
+        await db.mark_as_verified(request.log_id, request.created_by)
+
+        # 8. 로깅
+        logger.info(
+            f"[Bulk 피드백 + S3] log_id={request.log_id}, "
+            f"feedback_count={len(feedback_ids)}, "
+            f"final_labels={len(final_labels)}, "
+            f"saved_to_s3={saved_to_s3}, "
+            f"fn_pending={fn_pending}, "
+            f"by={request.created_by or 'anonymous'}"
+        )
+
+        # 9. 응답 반환
+        return BulkFeedbackResponse(
+            status="ok",
+            log_id=request.log_id,
+            feedback_ids=feedback_ids,
+            saved_to_s3=saved_to_s3,
+            refined_path=refined_path,
+            final_label_count=len(final_labels),
+            false_negative_pending=fn_pending,
+            created_at=datetime.now().isoformat()
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[Bulk 피드백 실패] {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create bulk feedback: {str(e)}"
         )
 
 
@@ -118,12 +378,18 @@ async def get_labeling_queue():
         for item in queue_items:
             # 1. Image URL 생성 (Presigned URL)
             image_url = generate_presigned_url(item["image_path"])
-            
+
             # 2. Detections JSON 파싱
             try:
                 detections = json.loads(item["detections"])
             except:
                 detections = []
+
+            # 3. target_bbox JSON 파싱
+            try:
+                target_bbox = json.loads(item["target_bbox"]) if item.get("target_bbox") else None
+            except:
+                target_bbox = None
 
             response_list.append(FeedbackQueueResponse(
                 feedback_id=item["feedback_id"],
@@ -132,9 +398,10 @@ async def get_labeling_queue():
                 feedback_type=item["feedback_type"],
                 comment=item["comment"],
                 created_at=item["created_at"],
-                original_detections=detections
+                original_detections=detections,
+                target_bbox=target_bbox
             ))
-            
+
         return response_list
 
     except Exception as e:
