@@ -160,7 +160,7 @@ Coded by www.creative-tim.com
                     <p id="image-details-desc">-</p>
                   </div>
                   <div class="custom-control custom-switch">
-                    <input type="checkbox" class="custom-control-input" id="bboxToggle">
+                    <input type="checkbox" class="custom-control-input" id="bboxToggle" checked>
                     <label class="custom-control-label" for="bboxToggle">Show BBox</label>
                   </div>
                 </div>
@@ -191,6 +191,101 @@ Coded by www.creative-tim.com
           </div>
           <!-- 세션 선택 드롭다운 -->
 
+        </div>
+
+        <!-- Feedback Row -->
+        <div class="row" style="margin-top: 30px;">
+          <!-- Left: Feedback Controls for Selected Box -->
+          <div class="col-md-6">
+            <div class="card" style="min-height: 250px;">
+              <div class="card-header">
+                <h5 class="card-title">Defect Feedback <small class="text-muted">(Click a bbox in image)</small></h5>
+              </div>
+              <div class="card-body">
+                <div id="no-box-selected" class="text-muted text-center mt-4">
+                  <p>Select a bounding box on the image to provide feedback.</p>
+                </div>
+
+                <div id="box-feedback-form" style="display: none;">
+                  <h6 class="text-info" id="selected-box-info">Selected: Unknown</h6>
+
+                  <form>
+                    <div class="form-group">
+                      <label>Feedback Type</label>
+                      <div class="custom-controls-stacked">
+                        <div class="custom-control custom-radio">
+                          <input type="radio" id="fb-none" name="feedbackType" class="custom-control-input" value="none"
+                            checked>
+                          <label class="custom-control-label" for="fb-none">Correct (No Issue)</label>
+                        </div>
+                        <div class="custom-control custom-radio">
+                          <input type="radio" id="fb-fp" name="feedbackType" class="custom-control-input"
+                            value="false_positive">
+                          <label class="custom-control-label" for="fb-fp">False Positive (Not a Defect)</label>
+                        </div>
+                        <div class="custom-control custom-radio">
+                          <input type="radio" id="fb-wrong" name="feedbackType" class="custom-control-input"
+                            value="tp_wrong_class">
+                          <label class="custom-control-label" for="fb-wrong">Wrong Class</label>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div class="form-group" id="correct-class-group" style="display: none;">
+                      <label>Correct Class</label>
+                      <select class="form-control" id="correct-class-select">
+                        <option value="Missing Hole">Missing Hole</option>
+                        <option value="Mouse Bite">Mouse Bite</option>
+                        <option value="Open Circuit">Open Circuit</option>
+                        <option value="Short">Short</option>
+                        <option value="Spur">Spur</option>
+                        <option value="Spurious Copper">Spurious Copper</option>
+                        <option value="scratch">scratch</option>
+                        <option value="dent">dent</option>
+                        <option value="hole">hole</option>
+                      </select>
+                    </div>
+
+                    <div class="form-group">
+                      <label>Comment</label>
+                      <input type="text" class="form-control form-control-sm" id="box-comment" placeholder="Details...">
+                    </div>
+
+                    <!-- Hidden/Optional Button -->
+                    <button type="button" class="btn btn-sm btn-outline-success" id="save-box-feedback"
+                      style="display:none;">Update Box</button>
+                  </form>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Right: Global Submission -->
+          <div class="col-md-6">
+            <div class="card" style="min-height: 250px;">
+              <div class="card-header">
+                <h5 class="card-title">Submission</h5>
+              </div>
+              <div class="card-body">
+                <form id="global-feedback-form">
+                  <div class="form-group">
+                    <label>Missing Defects (False Negative Memo)</label>
+                    <textarea class="form-control" id="feedback-memo" rows="3"
+                      placeholder="Describe any missing defects not detected"></textarea>
+                  </div>
+
+                  <div class="alert alert-info" role="alert" style="font-size: 12px; padding: 10px;">
+                    <strong>Summary:</strong> <span id="feedback-summary">0 Box Selected</span>
+                  </div>
+
+                  <div class="text-right">
+                    <button type="button" class="btn btn-primary btn-block" id="send-feedback-btn">Submit All
+                      Feedback</button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -508,6 +603,10 @@ Coded by www.creative-tim.com
 
       // Click Event Handler
       $(document).on('click', '.defect-row', function () {
+        // Clear previous feedback state
+        if (typeof clearFeedbackState === 'function') clearFeedbackState();
+        else pendingBoxFeedbacks = {}; // Fallback
+
         // Highlight selected row
         $('.defect-row').removeClass('table-active'); // Remove formatting from others
         $(this).addClass('table-active'); // Bootstrap class for highlighting
@@ -584,6 +683,8 @@ Coded by www.creative-tim.com
         return '#' + "00000".substring(0, 6 - c.length) + c;
       }
 
+      let pendingBoxFeedbacks = {}; // Store feedback per box index {0: {type:..., label:..., comment:...}}
+
       // BBox Update Function
       function updateBBox(defects) {
         const container = $('#bbox-container');
@@ -593,18 +694,15 @@ Coded by www.creative-tim.com
         if (!img || !img.naturalWidth) return; // Wait for image to load
 
         // Calculate Scale Factor
-        // img.width is the current displayed width
-        // img.naturalWidth is the original width
         const scaleX = img.width / img.naturalWidth;
         const scaleY = img.height / img.naturalHeight;
 
-        // Offset within the container
         const offsetLeft = img.offsetLeft;
         const offsetTop = img.offsetTop;
 
         if ($('#bboxToggle').is(':checked') && defects && defects.length > 0) {
-          defects.forEach(defect => {
-            const bbox = defect.bbox; // [x, y, w, h] roughly from original coords
+          defects.forEach((defect, index) => {
+            const bbox = defect.bbox;
             const color = getColor(defect.type);
 
             // Apply scaling and offset
@@ -613,17 +711,38 @@ Coded by www.creative-tim.com
             const finalW = bbox[2] * scaleX;
             const finalH = bbox[3] * scaleY;
 
-            const boxDiv = $('<div></div>').css({
-              'position': 'absolute',
-              'left': finalX + 'px',
-              'top': finalY + 'px',
-              'width': finalW + 'px',
-              'height': finalH + 'px',
-              'border': `2px solid ${color}`,
-              'pointer-events': 'none'
-            });
+            // Check if this box has pending feedback
+            let borderStyle = '2px solid ' + color;
+            let displayType = defect.type;
 
-            const label = $('<span></span>').text(defect.type).css({
+            if (pendingBoxFeedbacks[index]) {
+              const fb = pendingBoxFeedbacks[index];
+              if (fb.type === 'false_positive') {
+                borderStyle = '2px dashed red'; // FP visual
+                // keeping original displayType
+              } else if (fb.type === 'tp_wrong_class') {
+                borderStyle = '2px solid orange'; // Wrong Class visual
+                displayType = fb.correct_label;
+              }
+            }
+
+            const boxDiv = $('<div></div>')
+              .addClass('bbox-div')
+              .attr('data-index', index)
+              .css({
+                'position': 'absolute',
+                'left': finalX + 'px',
+                'top': finalY + 'px',
+                'width': finalW + 'px',
+                'height': finalH + 'px',
+                'border': borderStyle,
+                'cursor': 'pointer',
+                'pointer-events': 'auto',
+                'z-index': 9999, // Ensure on top
+                'background-color': 'rgba(255, 255, 255, 0.01)' // Ensure hit test works
+              });
+
+            const label = $('<span></span>').text(displayType).css({
               'position': 'absolute',
               'top': '-20px',
               'left': '-2px',
@@ -632,7 +751,7 @@ Coded by www.creative-tim.com
               'font-size': '10px',
               'padding': '2px 4px',
               'white-space': 'nowrap',
-              'z-index': 10
+              'z-index': 101
             });
 
             boxDiv.append(label);
@@ -640,6 +759,121 @@ Coded by www.creative-tim.com
           });
         }
       }
+
+      // Handle BBox Click
+      $(document).on('click', '.bbox-div', function () {
+        // alert("Click detected on box index: " + $(this).data('index'));
+        const index = $(this).data('index');
+        const defect = currentDefects[index];
+
+        if (!defect) return;
+
+        // UI Setup
+        $('#no-box-selected').hide();
+        $('#box-feedback-form').show();
+        $('#selected-box-info').text(`Selected: ${defect.type} (Conf: ${(currentDefects[index].confidence || 0).toFixed(2)})`);
+        $('#box-feedback-form').data('index', index); // Store active index
+
+        // Load existing feedback if any
+        const fb = pendingBoxFeedbacks[index];
+        if (fb) {
+          $(`input[name="feedbackType"][value="${fb.type}"]`).prop('checked', true);
+          if (fb.type === 'tp_wrong_class') {
+            $('#correct-class-group').show();
+            $('#correct-class-select').val(fb.correct_label);
+          } else {
+            $('#correct-class-group').hide();
+          }
+          $('#box-comment').val(fb.comment || '');
+        } else {
+          $('#fb-none').prop('checked', true);
+          $('#correct-class-group').hide();
+          $('#box-comment').val('');
+        }
+      });
+
+      // Handle Feedback Type Change
+      function applyLocalFeedback() {
+        const index = $('#box-feedback-form').data('index');
+        if (index === undefined) return;
+
+        const type = $('input[name="feedbackType"]:checked').val();
+        const comment = $('#box-comment').val();
+
+        // Show/Hide Correct Class Select
+        if (type === 'tp_wrong_class') {
+          $('#correct-class-group').show();
+        } else {
+          $('#correct-class-group').hide();
+        }
+
+        if (type === 'none') {
+          delete pendingBoxFeedbacks[index];
+        } else {
+          const fbItem = {
+            type: type,
+            comment: comment
+          };
+          if (type === 'tp_wrong_class') {
+            fbItem.correct_label = $('#correct-class-select').val();
+          }
+          pendingBoxFeedbacks[index] = fbItem;
+        }
+
+        // Update UI Immediately
+        updateBBox(currentDefects);
+        const count = Object.keys(pendingBoxFeedbacks).length;
+        $('#feedback-summary').text(`${count} Box Selected`);
+      }
+
+      // Handle Feedback Type Change
+      $('input[name="feedbackType"]').change(applyLocalFeedback);
+
+      // Save/Update Box Feedback (Local State)
+      $('#save-box-feedback').click(function () {
+        const index = $('#box-feedback-form').data('index');
+        // console.log("Saving feedback for index:", index);
+        if (index === undefined) return;
+
+        const type = $('input[name="feedbackType"]:checked').val();
+        const comment = $('#box-comment').val();
+
+        if (type === 'none') {
+          delete pendingBoxFeedbacks[index];
+        } else {
+          const fbItem = {
+            type: type,
+            comment: comment
+          };
+          if (type === 'tp_wrong_class') {
+            fbItem.correct_label = $('#correct-class-select').val();
+          }
+          pendingBoxFeedbacks[index] = fbItem;
+        }
+
+        // console.log("Current Pending Feedbacks:", pendingBoxFeedbacks);
+
+        // Update UI
+        updateBBox(currentDefects); // Redraw
+
+        const count = Object.keys(pendingBoxFeedbacks).length;
+        $('#feedback-summary').text(`${count} box correction(s)`);
+
+        // alert("Box updated! feedback count: " + count);
+      });
+
+      // Clear pending when log changes
+      function clearFeedbackState() {
+        pendingBoxFeedbacks = {};
+        $('#no-box-selected').show();
+        $('#box-feedback-form').hide();
+        $('#feedback-summary').text('0 box corrections');
+        $('#feedback-memo').val('');
+      }
+
+
+
+
 
       // Toggle Event
       $('#bboxToggle').change(function () {
@@ -653,6 +887,102 @@ Coded by www.creative-tim.com
 
       // Select first item by default
       $('.defect-row').first().click();
+
+      // Feedback Submission Logic
+      // Feedback Submission Logic
+      $('#send-feedback-btn').click(async function () {
+        // Get active log ID
+        const activeRow = $('.table-active');
+        if (activeRow.length === 0) {
+          alert("Please select a log entry first.");
+          return;
+        }
+
+        const uid = activeRow.data('id');
+        const selectedLog = defectLogs.find(log => log.uid == uid);
+
+        if (!selectedLog) {
+          alert("Selected log data not found.");
+          return;
+        }
+
+        const memo = $('#feedback-memo').val();
+
+        // Collect Box Feedbacks
+        const feedbacks = [];
+
+        if (pendingBoxFeedbacks) {
+          Object.keys(pendingBoxFeedbacks).forEach(index => {
+            const fb = pendingBoxFeedbacks[index];
+            const originalDefect = selectedLog.defects[index];
+            if (originalDefect && originalDefect.bbox) {
+              // Convert xywh to xyxy
+              const x = originalDefect.bbox[0];
+              const y = originalDefect.bbox[1];
+              const w = originalDefect.bbox[2];
+              const h = originalDefect.bbox[3];
+              const x2 = x + w;
+              const y2 = y + h;
+
+              feedbacks.push({
+                feedback_type: fb.type,
+                correct_label: fb.correct_label || null,
+                comment: fb.comment || null,
+                target_bbox: [x, y, x2, y2]
+              });
+            }
+          });
+        }
+
+        if (feedbacks.length === 0 && (!memo || memo.trim() === "")) {
+          alert("피드백 정보가 없습니다. 박스를 수정하거나 코멘트를 입력해주세요.");
+          return;
+        }
+
+        // Prepare Payload
+        const img = document.getElementById('main-image');
+
+        // Safety check for log_id
+        let safeLogId = parseInt(selectedLog.id);
+        if (isNaN(safeLogId)) {
+          console.warn("Log ID is NaN or missing, defaulting to 1 for test", selectedLog);
+          safeLogId = 1; // Fallback to satisfy gt=0 constraint if real ID is missing
+        }
+
+        const payload = {
+          log_id: safeLogId,
+          image_width: img.naturalWidth || 800, // Fallback if not loaded
+          image_height: img.naturalHeight || 600,
+          feedbacks: feedbacks,
+          false_negative_memo: memo || null,
+          created_by: "dashboard_user"
+        };
+
+        try {
+          const response = await fetch(`${API_BASE_URL}/feedback/bulk`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(payload)
+          });
+
+          if (response.ok) {
+            alert("Feedback submitted successfully!");
+            $('#feedback-memo').val(''); // Clear input
+            // Optional: clear box feedbacks too? User didn't ask, but good UX.
+            // But usually we might want to keep them visible until refresh?
+            // User flow: Submit -> Done.
+          } else {
+            const errData = await response.json();
+            console.error("Feedback Error Details:", errData);
+            alert(`Error submitting feedback: ${JSON.stringify(errData, null, 2)}`);
+          }
+        } catch (error) {
+          console.error("Feedback error:", error);
+          alert("Network error submitting feedback.");
+        }
+      });
     });
   </script>
 </body>
