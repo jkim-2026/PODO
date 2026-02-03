@@ -71,12 +71,6 @@ class PCBPreprocessor:
     def _try_crop(self, frame: np.ndarray) -> Optional[np.ndarray]:
         """
         배경 빼기로 PCB 영역을 찾고 크롭
-
-        Args:
-            frame: BGR 프레임
-
-        Returns:
-            크롭된 PCB 이미지 또는 None (크기 검증 실패 시)
         """
         # 그레이스케일 변환
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -119,19 +113,12 @@ class PCBPreprocessor:
             return None
 
         x, y, w, h = valid_contour
-        print(f"[Preprocessor] 크롭 성공! bbox: x={x}, w={w}, size={w}x{h}")
+        print(f"[Preprocessor] 크롭 성공! bbox: x={x}, y={y}, size={w}x{h}")
         return frame[y:y+h, x:x+w].copy()
 
     def _validate_size(self, w: int, h: int) -> bool:
         """
         PCB 크기 유효성 검증
-
-        Args:
-            w: 너비
-            h: 높이
-
-        Returns:
-            유효하면 True
         """
         # 높이 범위 확인
         if not (config.MIN_HEIGHT <= h <= config.MAX_HEIGHT):

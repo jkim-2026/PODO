@@ -38,8 +38,8 @@ class InferenceWorker(threading.Thread):
         self.running = False
 
         # 모델 로드 (Engine 변환 포함)
-        self.model = self._load_model(model_path)
-        print(f"[InferenceWorker] 모델 로드 완료: {model_path}")
+        self.model = self._load_model(config.MODEL_PATH)
+        print(f"[InferenceWorker] 모델 로드 완료: {config.MODEL_PATH}")
 
     def _load_model(self, model_path: str):
         """
