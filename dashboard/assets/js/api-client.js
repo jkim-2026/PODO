@@ -116,7 +116,7 @@ const DashboardUpdater = {
         this.startPolling();
     },
 
-        // 세션 선택기 초기화
+    // 세션 선택기 초기화
     initSessionSelector: function () {
         const selector = document.getElementById("session-select");
         if (!selector) return;
@@ -296,7 +296,11 @@ const DashboardUpdater = {
     startPolling: function () {
         this.updateData();
         this.updateSessionChart();  // 초기 세션 차트 로드
-        this.updateAlertBanner();   // 초기 배너 로드
+
+        // Health 페이지가 아닐 때만 초기 배너 로드 (Health는 updateData 내부에서 처리)
+        if (!this.isHealthPage) {
+            this.updateAlertBanner();
+        }
 
         // 세션 목록도 주기적으로 갱신 (5초마다)
         setInterval(() => this.loadSessions(), 5000);
@@ -305,7 +309,10 @@ const DashboardUpdater = {
         // 실시간 업데이트
         setInterval(() => {
             this.updateData();
-            this.updateAlertBanner();
+            // Health 페이지가 아닐 때만 배너 별도 업데이트
+            if (!this.isHealthPage) {
+                this.updateAlertBanner();
+            }
         }, 1000);
     },
 
@@ -317,14 +324,25 @@ const DashboardUpdater = {
         // 현재 세션에서 이미 알림을 껐다면 표시하지 않음
         if (this.dismissedAlertSession === this.selectedSessionId) return;
 
-        const data = await ApiClient.getAlerts(this.selectedSessionId);
-        if (!data || !data.alerts || data.alerts.length === 0) {
+        // Health 페이지에서는 이미 로드된 healthData 사용 (일관성 보장)
+        let alerts = [];
+        if (this.isHealthPage && this.cachedHealthData && this.cachedHealthData.alerts) {
+            alerts = this.cachedHealthData.alerts;
+        } else {
+            // Dashboard 페이지에서는 별도 API 호출
+            const data = await ApiClient.getAlerts(this.selectedSessionId);
+            if (data && data.alerts) {
+                alerts = data.alerts;
+            }
+        }
+
+        if (alerts.length === 0) {
             container.innerHTML = "";
             return;
         }
 
-        // 가장 심각한 알림 하나만 표시하거나 요약
-        const mainAlert = data.alerts[0];
+        // 가장 심각한 알림 하나만 표시
+        const mainAlert = alerts[0];
         const levelClass = mainAlert.level === 'critical' ? 'alert-danger' : 'alert-warning';
         const icon = mainAlert.level === 'critical' ? 'nc-bell-55' : 'nc-alert-circle-i';
 
@@ -383,6 +401,9 @@ const DashboardUpdater = {
     updateHealthMetrics: async function (sessionId) {
         const data = await ApiClient.getHealth(sessionId);
         if (!data) return;
+
+        // Health 데이터 캐시 (배너와 일관성 유지)
+        this.cachedHealthData = data;
 
         // 상단 배지 및 상태
         const statusBadge = document.getElementById("system-status-badge");
@@ -450,6 +471,9 @@ const DashboardUpdater = {
             this.charts.typeDist.data.datasets[0].data = counts;
             this.charts.typeDist.update();
         }
+
+        // Health 데이터 로드 후 배너 업데이트 (일관성 보장)
+        this.updateAlertBanner();
     },
 
     // Session Statistics Chart Update

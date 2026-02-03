@@ -704,6 +704,11 @@ def generate_alerts(
             action="공정 개선 검토 권장"
         ))
 
+    # 심각도 순으로 정렬 (critical → warning)
+    # 프론트엔드에서 alerts[0]을 배너에 표시하므로 가장 심각한 알림이 먼저 와야 함
+    severity_order = {"critical": 0, "warning": 1}
+    alerts.sort(key=lambda x: severity_order.get(x.level, 2))
+
     return alerts
 
 
