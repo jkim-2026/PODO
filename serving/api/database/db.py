@@ -892,34 +892,194 @@ async def get_feedback_by_log_id(log_id: int) -> List[Dict]:
         return [dict(row) for row in await cursor.fetchall()]
 
 
+def bbox_equals(bbox1: List, bbox2: List, tolerance: int = 2) -> bool:
+    """
+    두 bbox가 동일한지 확인 (오차 허용)
+
+    Args:
+        bbox1: [x1, y1, x2, y2]
+        bbox2: [x1, y1, x2, y2]
+        tolerance: 허용 오차 (픽셀)
+
+    Returns:
+        동일 여부
+    """
+    if not bbox1 or not bbox2:
+        return False
+    if len(bbox1) != 4 or len(bbox2) != 4:
+        return False
+    return all(abs(a - b) <= tolerance for a, b in zip(bbox1, bbox2))
+
+
 async def get_feedback_stats() -> Dict:
     """
-    피드백 통계 집계
+    피드백 통계 조회 (bbox 기반 정확도 분석)
+
+    새로운 응답 구조:
+    - image_stats: 전체 이미지 + 검증 진행률
+    - bbox_stats: 검증된 defect의 bbox별 정확도 (is_verified=true만)
+    - feedback_stats: 피드백 타입별 집계
+    - class_confusion: 클래스 혼동 패턴 (is_verified=true, FN 제외)
 
     Returns:
         {
-            "total_feedback": int,
-            "by_type": {"false_positive": int, "false_negative": int, "label_correction": int},
-            "by_defect_type": [
-                {
-                    "defect_type": str,
-                    "false_positive": int,
-                    "false_negative": int,
-                    "label_correction": int
-                }
-            ],
-            "recent_feedback_count": int
+            "image_stats": {...},
+            "bbox_stats": {...},
+            "feedback_stats": {...},
+            "class_confusion": [...]
         }
     """
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
 
-        # 1. 전체 피드백 개수
-        cursor = await db.execute("SELECT COUNT(*) as cnt FROM feedback")
+        # ===== 1. image_stats 집계 (전체 이미지) =====
+        cursor = await db.execute("""
+            SELECT
+                COUNT(*) as total,
+                SUM(CASE WHEN result = 'defect' THEN 1 ELSE 0 END) as defect_count,
+                SUM(CASE WHEN result = 'normal' THEN 1 ELSE 0 END) as normal_count,
+                SUM(CASE WHEN is_verified = 1 THEN 1 ELSE 0 END) as verified_count,
+                SUM(CASE WHEN is_verified = 1 AND result = 'defect' THEN 1 ELSE 0 END) as verified_defect,
+                SUM(CASE WHEN is_verified = 1 AND result = 'normal' THEN 1 ELSE 0 END) as verified_normal
+            FROM inspection_logs
+        """)
         row = await cursor.fetchone()
-        total_feedback = row["cnt"]
 
-        # 2. 피드백 종류별 집계
+        total = row["total"] or 0
+        defect_count = row["defect_count"] or 0
+        normal_count = row["normal_count"] or 0
+        verified_count = row["verified_count"] or 0
+        verified_defect = row["verified_defect"] or 0
+        verified_normal = row["verified_normal"] or 0
+
+        image_stats = {
+            "total": total,
+            "by_result": {"defect": defect_count, "normal": normal_count},
+            "verified": verified_count,
+            "unverified": total - verified_count,
+            "verification_rate": round(verified_count / total * 100, 1) if total > 0 else 0.0,
+            "verified_by_result": {"defect": verified_defect, "normal": verified_normal}
+        }
+
+        # ===== 2. bbox_stats 집계 (검증된 defect만) =====
+        # 검증된 defect 로그 조회
+        cursor = await db.execute("""
+            SELECT id, detections
+            FROM inspection_logs
+            WHERE result = 'defect' AND is_verified = 1
+        """)
+        verified_defect_logs = await cursor.fetchall()
+
+        # 전체 피드백 조회 (target_bbox 포함)
+        cursor = await db.execute("""
+            SELECT id, log_id, feedback_type, target_bbox, correct_label
+            FROM feedback
+        """)
+        all_feedbacks = await cursor.fetchall()
+
+        # 피드백을 log_id별로 그룹화
+        feedbacks_by_log = {}
+        for fb in all_feedbacks:
+            log_id = fb["log_id"]
+            if log_id not in feedbacks_by_log:
+                feedbacks_by_log[log_id] = []
+
+            target_bbox = None
+            if fb["target_bbox"]:
+                try:
+                    target_bbox = json.loads(fb["target_bbox"])
+                except:
+                    pass
+
+            feedbacks_by_log[log_id].append({
+                "id": fb["id"],
+                "feedback_type": fb["feedback_type"],
+                "target_bbox": target_bbox,
+                "correct_label": fb["correct_label"]
+            })
+
+        # bbox별 정답/오답 판정
+        bbox_stats = {
+            "total": 0,
+            "correct": 0,
+            "false_positive": 0,
+            "wrong_class": 0,
+            "by_defect_type": {}
+        }
+
+        # class_confusion 집계용 (from_class -> to_class -> count)
+        confusion_counter = {}
+
+        for log in verified_defect_logs:
+            log_id = log["id"]
+            detections = []
+            if log["detections"]:
+                try:
+                    detections = json.loads(log["detections"])
+                except:
+                    pass
+
+            log_feedbacks = feedbacks_by_log.get(log_id, [])
+
+            for det in detections:
+                det_bbox = det.get("bbox")
+                defect_type = det.get("defect_type", "unknown")
+
+                bbox_stats["total"] += 1
+
+                # 결함 타입별 통계 초기화
+                if defect_type not in bbox_stats["by_defect_type"]:
+                    bbox_stats["by_defect_type"][defect_type] = {
+                        "total": 0, "correct": 0, "fp": 0, "wrong": 0
+                    }
+                bbox_stats["by_defect_type"][defect_type]["total"] += 1
+
+                # 해당 bbox에 대한 피드백 찾기
+                feedback = None
+                for fb in log_feedbacks:
+                    fb_bbox = fb.get("target_bbox")
+                    if bbox_equals(det_bbox, fb_bbox):
+                        feedback = fb
+                        break
+
+                if feedback is None:
+                    # 피드백 없음 → 정답 (암묵적 TP)
+                    bbox_stats["correct"] += 1
+                    bbox_stats["by_defect_type"][defect_type]["correct"] += 1
+
+                elif feedback["feedback_type"] == "false_positive":
+                    # 오탐
+                    bbox_stats["false_positive"] += 1
+                    bbox_stats["by_defect_type"][defect_type]["fp"] += 1
+
+                elif feedback["feedback_type"] == "tp_wrong_class":
+                    # 클래스 오류
+                    bbox_stats["wrong_class"] += 1
+                    bbox_stats["by_defect_type"][defect_type]["wrong"] += 1
+
+                    # class_confusion 집계
+                    from_class = defect_type
+                    to_class = feedback.get("correct_label", "unknown")
+                    key = (from_class, to_class)
+                    confusion_counter[key] = confusion_counter.get(key, 0) + 1
+
+        # 정확도 계산
+        if bbox_stats["total"] > 0:
+            bbox_stats["accuracy_rate"] = round(
+                bbox_stats["correct"] / bbox_stats["total"] * 100, 1
+            )
+        else:
+            bbox_stats["accuracy_rate"] = 0.0
+
+        for dt_stats in bbox_stats["by_defect_type"].values():
+            if dt_stats["total"] > 0:
+                dt_stats["accuracy"] = round(
+                    dt_stats["correct"] / dt_stats["total"] * 100, 1
+                )
+            else:
+                dt_stats["accuracy"] = 0.0
+
+        # ===== 3. feedback_stats 집계 (전체) =====
         cursor = await db.execute("""
             SELECT feedback_type, COUNT(*) as cnt
             FROM feedback
@@ -927,68 +1087,32 @@ async def get_feedback_stats() -> Dict:
         """)
         rows = await cursor.fetchall()
 
-        by_type = {
+        feedback_stats = {
+            "total": 0,
             "false_positive": 0,
-            "false_negative": 0,
-            "label_correction": 0
+            "tp_wrong_class": 0,
+            "false_negative": 0
         }
         for row in rows:
-            by_type[row["feedback_type"]] = row["cnt"]
+            fb_type = row["feedback_type"]
+            cnt = row["cnt"]
+            feedback_stats["total"] += cnt
+            if fb_type in feedback_stats:
+                feedback_stats[fb_type] = cnt
 
-        # 3. 결함 타입별 × 피드백 종류별 교차 집계
-        # inspection_logs와 JOIN, detections JSON 파싱
-        cursor = await db.execute("""
-            SELECT il.detections, f.feedback_type
-            FROM feedback f
-            INNER JOIN inspection_logs il ON f.log_id = il.id
-            WHERE il.result = 'defect'
-        """)
-        rows = await cursor.fetchall()
-
-        # 결함 타입별 집계
-        defect_type_stats = {}
-
-        for row in rows:
-            if row["detections"]:
-                try:
-                    detections = json.loads(row["detections"])
-                    for det in detections:
-                        defect_type = det.get("defect_type", "unknown")
-                        feedback_type = row["feedback_type"]
-
-                        if defect_type not in defect_type_stats:
-                            defect_type_stats[defect_type] = {
-                                "defect_type": defect_type,
-                                "false_positive": 0,
-                                "false_negative": 0,
-                                "label_correction": 0
-                            }
-
-                        defect_type_stats[defect_type][feedback_type] += 1
-                except:
-                    pass
-
-        # 리스트로 변환 (개수 내림차순 정렬)
-        by_defect_type = list(defect_type_stats.values())
-        by_defect_type.sort(
-            key=lambda x: x["false_positive"] + x["false_negative"] + x["label_correction"],
-            reverse=True
-        )
-
-        # 4. 최근 24시간 피드백 개수
-        cursor = await db.execute("""
-            SELECT COUNT(*) as cnt
-            FROM feedback
-            WHERE created_at >= datetime('now', '-1 day')
-        """)
-        row = await cursor.fetchone()
-        recent_feedback_count = row["cnt"]
+        # ===== 4. class_confusion 리스트 생성 =====
+        class_confusion = [
+            {"from_class": k[0], "to_class": k[1], "count": v}
+            for k, v in confusion_counter.items()
+        ]
+        # count 내림차순 정렬
+        class_confusion.sort(key=lambda x: x["count"], reverse=True)
 
         return {
-            "total_feedback": total_feedback,
-            "by_type": by_type,
-            "by_defect_type": by_defect_type,
-            "recent_feedback_count": recent_feedback_count
+            "image_stats": image_stats,
+            "bbox_stats": bbox_stats,
+            "feedback_stats": feedback_stats,
+            "class_confusion": class_confusion
         }
 
 

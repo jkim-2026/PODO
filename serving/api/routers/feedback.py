@@ -3,8 +3,11 @@ from schemas.schemas import (
     FeedbackRequest,
     FeedbackResponse,
     FeedbackStatsResponse,
+    ImageStats,
+    BboxStats,
+    DefectTypeAccuracy,
     FeedbackTypeStats,
-    DefectTypeFeedbackStats,
+    ClassConfusion,
     FeedbackQueueResponse,
     RelabelRequest,
     BulkFeedbackRequest,
@@ -331,15 +334,16 @@ async def create_bulk_feedback(request: BulkFeedbackRequest):
 @router.get("/stats", response_model=FeedbackStatsResponse)
 async def get_feedback_statistics():
     """
-    피드백 통계 조회
+    피드백 통계 조회 (bbox 기반 정확도 분석)
 
     MLOps 모니터링용:
-    - 피드백 종류별 집계 (FP/FN/LC)
-    - 결함 타입별 피드백 집계
-    - 최근 24시간 피드백 개수
+    - image_stats: 전체 이미지 + 검증 진행률
+    - bbox_stats: 검증된 defect의 bbox별 정확도 (핵심)
+    - feedback_stats: 피드백 타입별 집계
+    - class_confusion: 클래스 혼동 패턴
 
     Returns:
-        피드백 통계 정보
+        FeedbackStatsResponse: bbox 기반 정확도 분석 결과
 
     Raises:
         HTTPException 500: 서버 에러
@@ -347,15 +351,38 @@ async def get_feedback_statistics():
     try:
         stats_data = await db.get_feedback_stats()
 
+        # image_stats 변환
+        image_stats = ImageStats(**stats_data["image_stats"])
+
+        # bbox_stats 변환 (by_defect_type 내 DefectTypeAccuracy 변환)
+        bbox_data = stats_data["bbox_stats"]
+        by_defect_type = {
+            dt: DefectTypeAccuracy(**dt_data)
+            for dt, dt_data in bbox_data["by_defect_type"].items()
+        }
+        bbox_stats = BboxStats(
+            total=bbox_data["total"],
+            correct=bbox_data["correct"],
+            false_positive=bbox_data["false_positive"],
+            wrong_class=bbox_data["wrong_class"],
+            accuracy_rate=bbox_data["accuracy_rate"],
+            by_defect_type=by_defect_type
+        )
+
+        # feedback_stats 변환
+        feedback_stats = FeedbackTypeStats(**stats_data["feedback_stats"])
+
+        # class_confusion 변환
+        class_confusion = [
+            ClassConfusion(**item)
+            for item in stats_data["class_confusion"]
+        ]
+
         return FeedbackStatsResponse(
-            total_feedback=stats_data["total_feedback"],
-            by_type=FeedbackTypeStats(**stats_data["by_type"]),
-            by_defect_type=[
-                DefectTypeFeedbackStats(**item)
-                for item in stats_data["by_defect_type"]
-            ],
-            recent_feedback_count=stats_data["recent_feedback_count"],
-            period_description="최근 24시간"
+            image_stats=image_stats,
+            bbox_stats=bbox_stats,
+            feedback_stats=feedback_stats,
+            class_confusion=class_confusion
         )
 
     except Exception as e:

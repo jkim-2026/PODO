@@ -338,37 +338,84 @@ class BulkFeedbackResponse(BaseModel):
     created_at: str
 
 
+# ===== Feedback Stats 응답 스키마 (bbox 기반 정확도 분석) =====
+
+class ImageStats(BaseModel):
+    """
+    이미지 단위 통계 (전체 + 검증 진행률)
+    """
+    total: int = Field(..., description="전체 이미지 개수")
+    by_result: Dict[str, int] = Field(..., description="결과별 개수 {'defect': 4, 'normal': 2}")
+    verified: int = Field(..., description="검증 완료 이미지 개수")
+    unverified: int = Field(..., description="미검증 이미지 개수")
+    verification_rate: float = Field(..., description="검증률 (%)")
+    verified_by_result: Dict[str, int] = Field(..., description="검증된 이미지의 결과별 개수")
+
+
+class DefectTypeAccuracy(BaseModel):
+    """
+    결함 타입별 정확도 (검증된 defect bbox만)
+    """
+    total: int = Field(..., description="해당 타입 bbox 개수")
+    correct: int = Field(..., description="정답 개수 (피드백 없음)")
+    fp: int = Field(..., description="오탐 개수 (false_positive)")
+    wrong: int = Field(..., description="클래스 오류 개수 (tp_wrong_class)")
+    accuracy: float = Field(..., description="정확도 (%)")
+
+
+class BboxStats(BaseModel):
+    """
+    bbox 단위 통계 (검증된 defect만)
+    모델 정확도 분석의 핵심 지표
+    """
+    total: int = Field(..., description="전체 bbox 개수")
+    correct: int = Field(..., description="정답 개수 (피드백 없음 = 암묵적 TP)")
+    false_positive: int = Field(..., description="오탐 개수")
+    wrong_class: int = Field(..., description="클래스 오류 개수")
+    accuracy_rate: float = Field(..., description="정확도 (%)")
+    by_defect_type: Dict[str, DefectTypeAccuracy] = Field(
+        default_factory=dict,
+        description="결함 타입별 정확도"
+    )
+
+
 class FeedbackTypeStats(BaseModel):
     """
-    피드백 종류별 통계
+    피드백 타입별 집계 (전체)
     """
-    false_positive: int = Field(default=0, description="오탐 개수 (정상인데 불량으로)")
-    false_negative: int = Field(default=0, description="미탐 개수 (불량인데 정상으로)")
-    label_correction: int = Field(default=0, description="라벨 수정 개수 (결함 종류 틀림)")
-
-
-class DefectTypeFeedbackStats(BaseModel):
-    """
-    결함 타입별 피드백 통계
-    """
-    defect_type: str = Field(..., description="결함 종류")
+    total: int = Field(..., description="전체 피드백 개수")
     false_positive: int = Field(default=0, description="오탐 개수")
+    tp_wrong_class: int = Field(default=0, description="클래스 오류 개수")
     false_negative: int = Field(default=0, description="미탐 개수")
-    label_correction: int = Field(default=0, description="라벨 수정 개수")
+
+
+class ClassConfusion(BaseModel):
+    """
+    클래스 혼동 패턴 (FN 제외)
+    모델이 어떤 클래스를 어떤 클래스로 잘못 예측하는지
+    """
+    from_class: str = Field(..., description="원본 예측 클래스")
+    to_class: str = Field(..., description="실제 정답 클래스")
+    count: int = Field(..., description="발생 횟수")
 
 
 class FeedbackStatsResponse(BaseModel):
     """
-    피드백 통계 응답
+    피드백 통계 응답 (bbox 기반 정확도 분석)
+
+    MLOps 모니터링용:
+    - image_stats: 전체 이미지 + 검증 진행률
+    - bbox_stats: 검증된 defect의 bbox별 정확도 (핵심)
+    - feedback_stats: 피드백 타입별 집계
+    - class_confusion: 클래스 혼동 패턴
     """
-    total_feedback: int = Field(..., description="전체 피드백 개수")
-    by_type: FeedbackTypeStats = Field(..., description="피드백 종류별 집계")
-    by_defect_type: List[DefectTypeFeedbackStats] = Field(
+    image_stats: ImageStats = Field(..., description="이미지 단위 통계")
+    bbox_stats: BboxStats = Field(..., description="bbox 단위 통계 (검증된 defect만)")
+    feedback_stats: FeedbackTypeStats = Field(..., description="피드백 타입별 집계")
+    class_confusion: List[ClassConfusion] = Field(
         default_factory=list,
-        description="결함 타입별 피드백 집계"
+        description="클래스 혼동 패턴 (FN 제외)"
     )
-    recent_feedback_count: int = Field(..., description="최근 24시간 피드백 개수")
-    period_description: str = Field(default="최근 24시간", description="집계 기간")
 
 
 class FeedbackQueueResponse(BaseModel):
