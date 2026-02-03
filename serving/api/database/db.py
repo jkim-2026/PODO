@@ -728,6 +728,14 @@ async def get_health(session_id: Optional[str]) -> HealthResponse:
     # 시스템 상태 결정
     status = determine_system_status(alerts)
 
+    # 저신뢰도 비율 계산
+    low_ratio = 0.0
+    if defect_confidence_stats:
+        dist = defect_confidence_stats.distribution
+        total_detections = dist.high + dist.medium + dist.low + dist.very_low
+        if total_detections > 0:
+            low_ratio = ((dist.low + dist.very_low) / total_detections) * 100
+
     return HealthResponse(
         status=status,
         timestamp=datetime.now().isoformat(),
@@ -738,6 +746,7 @@ async def get_health(session_id: Optional[str]) -> HealthResponse:
         defect_rate=stats.defect_rate,
         total_defects=stats.total_defects,
         avg_defects_per_item=stats.avg_defects_per_item,
+        low_confidence_ratio=round(low_ratio, 2),
         defect_confidence_stats=defect_confidence_stats,
         defect_type_stats=defect_type_stats,
         alerts=alerts
