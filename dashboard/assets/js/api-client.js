@@ -116,7 +116,7 @@ const DashboardUpdater = {
         this.startPolling();
     },
 
-    // 세션 선택기 초기화
+        // 세션 선택기 초기화
     initSessionSelector: function () {
         const selector = document.getElementById("session-select");
         if (!selector) return;
@@ -126,17 +126,15 @@ const DashboardUpdater = {
             const value = e.target.value;
             this.selectedSessionId = value ? parseInt(value) : null;
 
-            // 세션 ID 저장
+            // 두 저장소 모두 업데이트 (호환성 유지)
             sessionStorage.setItem("selectedSessionId", this.selectedSessionId);
-
-            // Save to localStorage
             if (this.selectedSessionId) {
                 localStorage.setItem("dashboard_selected_session", this.selectedSessionId);
             } else {
                 localStorage.removeItem("dashboard_selected_session");
             }
-            this.dismissedAlertSession = undefined; // 세션 변경 시 알림 초기화
 
+            this.dismissedAlertSession = undefined; // 세션 변경 시 알림 초기화
             console.log("Session selected:", this.selectedSessionId);
 
             // 트렌드 차트 리셋 (세션 변경 시)
@@ -199,7 +197,8 @@ const DashboardUpdater = {
                 sessionStorage.removeItem("selectedSessionId");
                 console.log("Invalid session removed, reset to All Sessions");
             }
-        },
+        }
+    },
 
     // 날짜/시간 포맷팅
     formatDateTime: function (isoString) {
