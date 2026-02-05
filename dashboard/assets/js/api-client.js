@@ -270,10 +270,10 @@ const DashboardUpdater = {
             this.charts.confDist = new Chart(elConfDist.getContext("2d"), {
                 type: "doughnut",
                 data: {
-                    labels: ["High (>=90%)", "Med (80~90%)", "Low (70~80%)", "Critical (<70%)"],
+                    labels: ["High (>=80%)", "Mid (50~80%)", "Low (<50%)"],
                     datasets: [{
-                        backgroundColor: ["#6bd098", "#fbc658", "#ef8157", "#c0c0c0"],
-                        data: [0, 0, 0, 0]
+                        backgroundColor: ["#6bd098", "#fbc658", "#ef8157"],
+                        data: [0, 0, 0]
                     }]
                 },
                 options: { legend: { position: 'bottom' } }
@@ -463,7 +463,7 @@ const DashboardUpdater = {
         // 신뢰도 분포 차트 업데이트
         if (this.charts.confDist && data.defect_confidence_stats) {
             const dist = data.defect_confidence_stats.distribution;
-            this.charts.confDist.data.datasets[0].data = [dist.high, dist.medium, dist.low, dist.very_low];
+            this.charts.confDist.data.datasets[0].data = [dist.high, dist.mid, dist.low];
             this.charts.confDist.update();
         }
 

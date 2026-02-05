@@ -451,7 +451,7 @@ async def get_confidence_distribution(session_id: Optional[int]) -> ConfidenceDi
         cursor = await db.execute(query, params)
         rows = await cursor.fetchall()
 
-        high = medium = low = very_low = 0
+        high = mid = low = 0
 
         for row in rows:
             if row["detections"]:
@@ -459,18 +459,16 @@ async def get_confidence_distribution(session_id: Optional[int]) -> ConfidenceDi
                     detections = json.loads(row["detections"])
                     for det in detections:
                         conf = det.get("confidence", 0)
-                        if conf >= 0.9:
+                        if conf >= 0.8:
                             high += 1
-                        elif conf >= 0.8:
-                            medium += 1
-                        elif conf >= 0.7:
-                            low += 1
+                        elif conf >= 0.5:
+                            mid += 1
                         else:
-                            very_low += 1
+                            low += 1
                 except:
                     pass
 
-        return ConfidenceDistribution(high=high, medium=medium, low=low, very_low=very_low)
+        return ConfidenceDistribution(high=high, mid=mid, low=low)
 
 
 async def get_defect_confidence_stats(session_id: Optional[int]) -> Optional[DefectConfidenceStats]:
@@ -664,10 +662,11 @@ def generate_alerts(
 
         # 3. 낮은 신뢰도 비율 체크
         dist = defect_confidence_stats.distribution
-        total_detections = dist.high + dist.medium + dist.low + dist.very_low
+        total_detections = dist.high + dist.mid + dist.low
 
         if total_detections > 0:
-            low_ratio = ((dist.low + dist.very_low) / total_detections) * 100
+            # mid + low (< 80%)를 기준으로 저신뢰도 비율 계산
+            low_ratio = ((dist.mid + dist.low) / total_detections) * 100
 
             if low_ratio >= ALERT_THRESHOLDS["low_confidence_ratio_critical"]:
                 alerts.append(AlertInfo(
@@ -761,9 +760,10 @@ async def get_health(session_id: Optional[str]) -> HealthResponse:
     low_ratio = 0.0
     if defect_confidence_stats:
         dist = defect_confidence_stats.distribution
-        total_detections = dist.high + dist.medium + dist.low + dist.very_low
+        total_detections = dist.high + dist.mid + dist.low
         if total_detections > 0:
-            low_ratio = ((dist.low + dist.very_low) / total_detections) * 100
+            # 기존에는 < 80%를 저신뢰도로 정의했으므로 mid + low를 사용
+            low_ratio = ((dist.mid + dist.low) / total_detections) * 100
 
     return HealthResponse(
         status=status,

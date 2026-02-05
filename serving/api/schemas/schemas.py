@@ -125,10 +125,9 @@ class ConfidenceDistribution(BaseModel):
     """
     신뢰도 분포
     """
-    high: int = Field(..., description="높은 신뢰도 (0.9-1.0)")
-    medium: int = Field(..., description="중간 신뢰도 (0.8-0.9)")
-    low: int = Field(..., description="낮은 신뢰도 (0.7-0.8)")
-    very_low: int = Field(..., description="매우 낮은 신뢰도 (<0.7)")
+    high: int = Field(..., description="높은 신뢰도 (>=0.8)")
+    mid: int = Field(..., description="중간 신뢰도 (0.5-0.8)")
+    low: int = Field(..., description="낮은 신뢰도 (<0.5)")
 
 
 class DefectConfidenceStats(BaseModel):
