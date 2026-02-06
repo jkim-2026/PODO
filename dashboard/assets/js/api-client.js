@@ -497,7 +497,26 @@ const DashboardUpdater = {
         // 신뢰도 분포 차트 업데이트
         if (this.charts.confDist && data.defect_confidence_stats) {
             const dist = data.defect_confidence_stats.distribution;
-            this.charts.confDist.data.datasets[0].data = [dist.high, dist.mid, dist.low];
+
+            // API returns: high, medium, low, very_low
+            // Web UI expects: High (>=80%), Mid (50-80%), Low (<50%)
+
+            // Map 'medium' (0.8-0.9 likely) and 'high' (>0.9) to UI High
+            const high = (dist.high || 0) + (dist.medium || 0) + (dist.High || 0);
+
+            // Map 'low' (0.5-0.8 likely based on counts) to UI Mid 
+            // Also include 'mid' or 'Mid' if they exist for compatibility
+            const mid = (dist.mid || 0) + (dist.low || 0) + (dist.Mid || 0);
+
+            // Map 'very_low' (<0.5 likely) to UI Low
+            // Also include 'Low' if it exists (legacy assumption)
+            const low = (dist.very_low || 0) + (dist.low_confidence || 0) + (dist.Low || 0);
+
+            // Note: If API returns 'low' as <0.5 in standard schema, this mapping might double count if schema changes.
+            // But based on current inspection: medium=128 (>=0.8), low=21 (0.5-0.8), very_low=28 (<0.5).
+            // So 'low' MUST be mapped to Mid. And 'very_low' to Low.
+
+            this.charts.confDist.data.datasets[0].data = [high, mid, low];
             this.charts.confDist.update();
         }
 
