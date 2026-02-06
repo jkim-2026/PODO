@@ -96,6 +96,9 @@ Coded by www.creative-tim.com
           <div class="collapse navbar-collapse justify-content-end" id="navigation">
             <!-- 세션 선택 드롭다운 -->
             <ul class="navbar-nav">
+              <li class="nav-item d-flex align-items-center mr-3">
+                <div id="alert-banner-container"></div>
+              </li>
               <li class="nav-item">
                 <div class="form-group mb-0" style="margin-top: 8px;">
                   <select class="form-control" id="session-select" style="width: 250px; height: 38px;">
@@ -109,8 +112,7 @@ Coded by www.creative-tim.com
       </nav>
       <!-- End Navbar -->
       <div class="content">
-        <!-- Alert Banner Area -->
-        <div id="alert-banner-container" style="margin-bottom: 20px;"></div>
+        <!-- Alert Banner Area Removed -->
         <div class="row">
           <div class="col-lg-3 col-md-6 col-sm-6">
             <div class="card card-stats">
@@ -134,7 +136,7 @@ Coded by www.creative-tim.com
                 <hr>
                 <div class="stats">
                   <i class="fa fa-refresh"></i>
-                  Real-time
+                  <span id="total-count-updated-text">Updated just now</span>
                 </div>
               </div>
             </div>
@@ -205,7 +207,7 @@ Coded by www.creative-tim.com
                   <div class="col-7 col-md-8">
                     <div class="numbers">
                       <p class="card-category">Model Used</p>
-                      <p class="card-title" id="model-used">YOLOv8n
+                      <p class="card-title" id="model-used">YOLOv11m
                       <p>
                     </div>
                   </div>
@@ -215,7 +217,7 @@ Coded by www.creative-tim.com
                 <hr>
                 <div class="stats">
                   <i class="fa fa-cogs"></i>
-                  Incremental Learning
+                  Object Detection
                 </div>
               </div>
             </div>
@@ -234,7 +236,7 @@ Coded by www.creative-tim.com
               <div class="card-footer ">
                 <hr>
                 <div class="stats">
-                  <i class="fa fa-history"></i> Updated every 5 seconds
+                  <i class="fa fa-history"></i> <span id="last-updated-text">Updated just now</span>
                 </div>
               </div>
             </div>
@@ -307,11 +309,45 @@ Coded by www.creative-tim.com
   <!-- Paper Dashboard DEMO methods, don't include it in your project! -->
   <script src="../assets/demo/demo.js"></script>
   <!-- API Client -->
-  <script src="../assets/js/api-client.js"></script>
+  <script src="../assets/js/api-client.js?v=6"></script>
   <script>
     $(document).ready(function () {
       // Javascript method's body can be found in assets/assets-for-demo/js/demo.js
       // demo.initChartsPages(); // Disabled to use real API data
+
+      // --- Dynamic 'Updated X seconds ago' Logic ---
+      let lastUpdateTime = Date.now();
+      const updatedTextEl1 = document.getElementById('last-updated-text');
+      const updatedTextEl2 = document.getElementById('total-count-updated-text');
+
+      // 1. Monkey-patch DashboardUpdater to capture update time
+      const originalUpdate = DashboardUpdater.updateSessionChart;
+      DashboardUpdater.updateSessionChart = async function () {
+        await originalUpdate.apply(this, arguments);
+        lastUpdateTime = Date.now();
+        updateTimeText(); // Reset immediately
+      };
+
+      // 2. Update text every second 
+      function updateTimeText() {
+        const now = Date.now();
+        const diffSeconds = Math.floor((now - lastUpdateTime) / 1000);
+
+        // Snap to nearest 5 seconds
+        let displaySec = Math.floor(diffSeconds / 5) * 5;
+        let text = "";
+
+        if (displaySec < 5) {
+          text = "Updated just now";
+        } else {
+          text = `Updated ${displaySec} seconds ago`;
+        }
+
+        if (updatedTextEl1) updatedTextEl1.innerText = text;
+        if (updatedTextEl2) updatedTextEl2.innerText = text;
+      }
+
+      setInterval(updateTimeText, 1000); // Check every second to update display
     });
   </script>
 </body>

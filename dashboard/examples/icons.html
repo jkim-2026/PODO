@@ -127,6 +127,9 @@ Coded by www.creative-tim.com
           <div class="collapse navbar-collapse justify-content-end" id="navigation">
             <!-- 세션 선택 드롭다운 -->
             <ul class="navbar-nav">
+              <li class="nav-item d-flex align-items-center mr-3">
+                <div id="alert-banner-container"></div>
+              </li>
               <li class="nav-item">
                 <div class="form-group mb-0" style="margin-top: 8px;">
                   <select class="form-control" id="session-select" style="width: 250px; height: 38px;">
@@ -141,7 +144,7 @@ Coded by www.creative-tim.com
       <!-- End Navbar -->
       <div class="content">
         <div class="row">
-          <div class="col-md-8" style="flex: 0 0 70%; max-width: 70%;">
+          <div class="col-md-8" style="flex: 0 0 60%; max-width: 60%;">
             <div class="card h-100">
               <div class="card-header">
                 <h5 class="card-title">Defect Image Viewer</h5>
@@ -167,7 +170,7 @@ Coded by www.creative-tim.com
               </div>
             </div>
           </div>
-          <div class="col-md-4" style="flex: 0 0 30%; max-width: 30%;">
+          <div class="col-md-4" style="flex: 0 0 40%; max-width: 40%;">
             <div class="card h-100">
               <div class="card-header">
                 <h5 class="card-title">Recent Defects Log </h5>
@@ -196,8 +199,8 @@ Coded by www.creative-tim.com
         <!-- Bottom Row: Unified Feedback System (Side-by-Side) -->
         <div class="row" style="margin-top: 30px;">
           <!-- Left Sub-col: Unified Input Form (Wider) -->
-          <div class="col-md-8">
-            <div class="card" style="min-height: 350px;">
+          <div class="col-md-8" style="flex: 0 0 60%; max-width: 60%;">
+            <div class="card" style="height: 320px;">
               <div class="card-header">
                 <h5 class="card-title" id="feedback-form-title">Feedback</h5>
               </div>
@@ -219,18 +222,21 @@ Coded by www.creative-tim.com
                           <div class="custom-control custom-radio">
                             <input type="radio" id="fb-fn" name="feedbackTypeUnified" class="custom-control-input"
                               value="false_negative" checked>
-                            <label class="custom-control-label" for="fb-fn">False Negative (Missed)</label>
+                            <label class="custom-control-label" for="fb-fn" style="font-size: 15px;">False Negative
+                              (Missed)</label>
                           </div>
                           <!-- Box Specific (Enabled only when box selected) -->
                           <div class="custom-control custom-radio">
                             <input type="radio" id="fb-fp" name="feedbackTypeUnified" class="custom-control-input"
                               value="false_positive" disabled>
-                            <label class="custom-control-label" for="fb-fp">False Positive (Not Defect)</label>
+                            <label class="custom-control-label" for="fb-fp" style="font-size: 15px;">False Positive (Not
+                              Defect)</label>
                           </div>
                           <div class="custom-control custom-radio">
                             <input type="radio" id="fb-wrong" name="feedbackTypeUnified" class="custom-control-input"
                               value="tp_wrong_class" disabled>
-                            <label class="custom-control-label" for="fb-wrong">Wrong Class</label>
+                            <label class="custom-control-label" for="fb-wrong" style="font-size: 15px;">Wrong
+                              Class</label>
                           </div>
                         </div>
                       </div>
@@ -276,22 +282,24 @@ Coded by www.creative-tim.com
           </div>
 
           <!-- Right Sub-col: Feedback Queue (Narrower) -->
-          <div class="col-md-4">
-            <div class="card" style="min-height: 350px; display: flex; flex-direction: column;">
-              <div class="card-header bg-light">
-                <h6 class="card-title mb-0" style="font-size: 14px;">Pending Queue <span class="badge badge-info"
-                    id="queue-count">0</span></h6>
+          <div class="col-md-4" style="flex: 0 0 40%; max-width: 40%;">
+            <div class="card" style="height: 320px; display: flex; flex-direction: column;">
+              <div class="card-header">
+                <h5 class="card-title">
+                  Pending Queue <span class="badge badge-info" id="queue-count">0</span>
+                </h5>
               </div>
-              <div class="card-body p-2" style="flex: 1; overflow-y: auto; max-height: 300px;">
+
+              <div class="card-body p-2" style="flex: 1; overflow-y: auto;">
                 <ul class="list-group list-group-flush" id="feedback-queue-list">
-                  <!-- Queue Items will be appended here -->
-                  <li class="list-group-item text-muted text-center" id="empty-queue-msg" style="font-size: 12px;">
-                    No items pending</li>
+                  <li class="list-group-item text-muted text-center" id="empty-queue-msg" style="font-size: 15px;">
+                    No items pending
+                  </li>
                 </ul>
               </div>
+
               <div class="card-footer p-2">
-                <button type="button" class="btn btn-primary btn-block btn-sm" id="submit-queue-btn">Submit
-                  All</button>
+                <button type="button" class="btn btn-primary btn-block btn-sm" id="submit-queue-btn">Submit All</button>
               </div>
             </div>
           </div>
@@ -316,7 +324,7 @@ Coded by www.creative-tim.com
   <!-- Paper Dashboard DEMO methods, don't include it in your project! -->
   <script src="../assets/demo/demo.js"></script>
   <!-- API Client -->
-  <script src="../assets/js/api-client.js"></script>
+  <script src="../assets/js/api-client.js?v=6"></script>
   <script>
     $(document).ready(function () {
       // Dummy Data for Defect Logs (Mocking API Response)
@@ -358,12 +366,28 @@ Coded by www.creative-tim.com
           });
 
           let types = typesArr.join(', ');
-          let typeClass = 'text-danger';
+
+          // --- [색상 결정 로직 수정됨] ---
+          let typeClass = '';
 
           if (log.defects.length === 0) {
+            // 1. Normal (정상) -> 초록색
             types = "Normal";
             typeClass = "text-success";
+          } else {
+            // 2. Defect (불량) 있는 경우
+            // 결함 박스들 중 하나라도 confidence가 0.6(60%) 미만인지 확인
+            const hasLowConfidence = log.defects.some(d => d.confidence < 0.6);
+
+            if (hasLowConfidence) {
+              // 60% 미만인 게 하나라도 있으면 -> 빨간색 (위험/재확인 필요)
+              typeClass = "text-danger";
+            } else {
+              // 모두 60% 이상이면 -> 주황색 (확실한 불량)
+              typeClass = "text-warning";
+            }
           }
+          // -----------------------------
 
           // 세션 ID 표시 (없으면 '-')
           const sessionDisplay = log.session_id ? `${log.session_id}` : '-';
@@ -373,7 +397,7 @@ Coded by www.creative-tim.com
                 <td class="text-muted" style="font-size: 11px;">${sessionDisplay}</td>
                 <td>${log.time}</td>
                 <td class="${typeClass}">
-                  <div style="display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; text-overflow: ellipsis; max-height: 3em; line-height: 1.5;">
+                  <div style="display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; text-overflow: ellipsis; max-height: 3em; line-height: 1.5; font-weight: bold;">
                     ${types}
                   </div>
                 </td>
@@ -655,7 +679,7 @@ Coded by www.creative-tim.com
           const types = typesArr.join(', ');
 
           const confVal = (currentLogConfidence * 100).toFixed(1);
-          const confStyle = currentLogConfidence < 0.6 ? 'color: red; font-weight: bold;' : '';
+          const confStyle = (currentLogConfidence < 0.6 && currentLogConfidence > 0.0) ? 'color: red; font-weight: bold;' : '';
 
           detailsTitle.text(`${selectedLog.id} - ${types}`);
           detailsDesc.html(`
@@ -849,7 +873,7 @@ Coded by www.creative-tim.com
         $('#fb-wrong').prop('disabled', true);
         $('#unified-correct-class-group').hide();
         $('#unified-comment').attr('placeholder', 'Enter details for missing defect...');
-        $('#feedback-form-title').text('New Feedback (Global)');
+        $('#feedback-form-title').text('Feedback');
       }
 
       function activateUnifiedForm(index, defect) {
@@ -945,7 +969,7 @@ Coded by www.creative-tim.com
         // REMOVED: $('#submit-queue-btn').prop('disabled', feedbackQueue.length === 0);
 
         if (feedbackQueue.length === 0) {
-          list.append('<li class="list-group-item text-muted text-center" style="font-size: 12px;">No items pending</li>');
+          list.append('<li class="list-group-item text-muted text-center" style="font-size: 15px;">No items pending</li>');
           return;
         }
 
@@ -969,7 +993,7 @@ Coded by www.creative-tim.com
           }
 
           const li = `
-                  <li class="list-group-item p-2" style="font-size: 12px;">
+                  <li class="list-group-item p-2" style="font-size: 15px;">
                       <div class="d-flex justify-content-between align-items-center mb-1">
                           <span class="badge ${badgeClass}">${typeText}</span>
                           <button class="btn btn-sm btn-outline-danger py-0 px-1 delete-queue-item" data-id="${item.id}">&times;</button>
@@ -988,6 +1012,7 @@ Coded by www.creative-tim.com
         feedbackQueue = feedbackQueue.filter(i => i.id !== id);
         renderQueue();
       });
+
 
       // Submit Queue
       $('#submit-queue-btn').on('click', function () {
@@ -1029,9 +1054,7 @@ Coded by www.creative-tim.com
           const fb = {
             feedback_type: item.type,
             comment: item.comment,
-            correct_label: finalLabel, 
-            
-            
+            correct_label: finalLabel,
             target_bbox: (Array.isArray(item.target_bbox) && item.target_bbox.length === 4)
               ? item.target_bbox
               : null
@@ -1039,7 +1062,6 @@ Coded by www.creative-tim.com
 
           payload.feedbacks.push(fb);
         });
-
         console.log("Submitting:", payload);
 
         // 1. Loading State

@@ -268,15 +268,25 @@ const DashboardUpdater = {
         const elConfDist = document.getElementById("chartConfidenceDist");
         if (elConfDist) {
             this.charts.confDist = new Chart(elConfDist.getContext("2d"), {
-                type: "doughnut",
+                type: "pie",
                 data: {
                     labels: ["High (>=80%)", "Mid (50~80%)", "Low (<50%)"],
                     datasets: [{
                         backgroundColor: ["#6bd098", "#fbc658", "#ef8157"],
+                        borderWidth: 0,
                         data: [0, 0, 0]
                     }]
                 },
-                options: { legend: { position: 'bottom' } }
+                options: {
+                    legend: {
+                        display: true,
+                        position: 'bottom',
+                        labels: { padding: 20 }
+                    },
+                    layout: { padding: 20 },
+                    pieceLabel: { render: "percentage", fontColor: ["white"] },
+                    tooltips: { enabled: true }
+                }
             });
         }
 
@@ -287,7 +297,16 @@ const DashboardUpdater = {
                 data: { labels: [], datasets: [{ label: "Count", backgroundColor: "#51bcda", data: [] }] },
                 options: {
                     legend: { display: false },
-                    scales: { xAxes: [{ ticks: { beginAtZero: true } }] }
+                    scales: {
+                        xAxes: [{
+                            ticks: { beginAtZero: true },
+                            gridLines: { display: false, drawBorder: false },
+                            barPercentage: 0.6
+                        }],
+                        yAxes: [{
+                            gridLines: { display: false, drawBorder: false }
+                        }]
+                    }
                 }
             });
         }
@@ -341,21 +360,17 @@ const DashboardUpdater = {
             return;
         }
 
-        // 가장 심각한 알림 하나만 표시
+        // Compact Navbar Alert
         const mainAlert = alerts[0];
-        const levelClass = mainAlert.level === 'critical' ? 'alert-danger' : 'alert-warning';
+        const badgeClass = mainAlert.level === 'critical' ? 'badge-danger' : 'badge-warning';
         const icon = mainAlert.level === 'critical' ? 'nc-bell-55' : 'nc-alert-circle-i';
 
         container.innerHTML = `
-            <div class="alert ${levelClass} alert-dismissible fade show" role="alert" style="margin-bottom: 0; padding-left: 50px;">
-                <i class="nc-icon ${icon}" style="position: absolute; left: 15px; top: 50%; transform: translateY(-50%); font-size: 20px;"></i>
-                <span>
-                    <b>[${mainAlert.level.toUpperCase()}]</b> ${mainAlert.message}
-                </span>
-                <button type="button" class="close" data-dismiss="alert" aria-label="Close" onclick="DashboardUpdater.dismissAlert()">
-                    <span aria-hidden="true">&times;</span>
-                </button>
-            </div>
+            <span class="badge ${badgeClass} p-3 d-flex align-items-center" style="cursor: pointer; font-size: 14px;" onclick="DashboardUpdater.dismissAlert()" title="${mainAlert.message}">
+                <i class="nc-icon ${icon}" style="margin-right: 8px; font-size: 20px;"></i> 
+                <span>${mainAlert.level.toUpperCase()}: ${mainAlert.message.substring(0, 30)}${mainAlert.message.length > 30 ? '...' : ''}</span>
+                <span aria-hidden="true" style="margin-left: 10px; font-size: 16px;">&times;</span>
+            </span>
         `;
     },
 
@@ -444,20 +459,39 @@ const DashboardUpdater = {
             }
         }
 
-        // 결함 타입 신뢰도 리스트
-        const typeList = document.getElementById("defect-type-list");
-        if (typeList && data.defect_type_stats) {
-            typeList.innerHTML = data.defect_type_stats.map(type => `
-                <li class="mb-2">
-                    <div class="d-flex justify-content-between">
-                        <span>${type.defect_type} (${type.count}건)</span>
-                        <span class="text-primary font-weight-bold">${(type.avg_confidence * 100).toFixed(0)}%</span>
-                    </div>
-                    <div class="progress" style="height: 8px;">
-                        <div class="progress-bar" role="progressbar" style="width: ${type.avg_confidence * 100}%"></div>
-                    </div>
-                </li>
-            `).join('');
+        // 결함 타입 신뢰도 테이블 업데이트 (Redesigned)
+        const typeTableBody = document.getElementById("defect-type-table-body");
+        if (typeTableBody && data.defect_type_stats) {
+            const colorMap = {
+                "Missing Hole": "#66615b",      // primary
+                "Mouse Bite": "#fbc658",        // warning
+                "Open Circuit": "#ef8157",      // danger
+                "Short": "#6bd098",             // success
+                "Spur": "#51cbce",              // info
+                "Spurious Copper": "#9A9A9A"    // gray
+            };
+
+            typeTableBody.innerHTML = data.defect_type_stats.map(type => {
+                const color = colorMap[type.defect_type] || "#66615b"; // default to primary
+                return `
+                <tr>
+                    <td>
+                        <div class="d-flex align-items-center">
+                            <span class="mr-2" style="width: 10px; height: 10px; background-color: ${color}; border-radius: 50%; display: inline-block;"></span>
+                            ${type.defect_type}
+                        </div>
+                    </td>
+                    <td class="text-right font-weight-bold">${type.count}</td>
+                    <td class="text-right">
+                        <div class="d-flex align-items-center justify-content-end">
+                            <span class="mr-2">${(type.avg_confidence * 100).toFixed(0)}%</span>
+                            <div class="progress" style="width: 100px; height: 6px; margin-bottom: 0;">
+                                <div class="progress-bar" role="progressbar" style="width: ${type.avg_confidence * 100}%; background-color: #51cbce"></div>
+                            </div>
+                        </div>
+                    </td>
+                </tr>
+            `}).join('');
         }
 
         // 신뢰도 분포 차트 업데이트
@@ -469,10 +503,22 @@ const DashboardUpdater = {
 
         // 결함 타입 분포 차트 업데이트
         if (this.charts.typeDist && data.defect_type_stats) {
+            const colorMap = {
+                "Missing Hole": "#66615b",      // primary
+                "Mouse Bite": "#fbc658",        // warning
+                "Open Circuit": "#ef8157",      // danger
+                "Short": "#6bd098",             // success
+                "Spur": "#51cbce",              // info
+                "Spurious Copper": "#9A9A9A"    // gray
+            };
+
             const labels = data.defect_type_stats.map(t => t.defect_type);
             const counts = data.defect_type_stats.map(t => t.count);
+            const bgColors = labels.map(label => colorMap[label] || "#51bcda"); // default fallback
+
             this.charts.typeDist.data.labels = labels;
             this.charts.typeDist.data.datasets[0].data = counts;
+            this.charts.typeDist.data.datasets[0].backgroundColor = bgColors;
             this.charts.typeDist.update();
         }
 
