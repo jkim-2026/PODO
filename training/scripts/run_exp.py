@@ -46,7 +46,8 @@ def main():
         config['data_path'] = resolved_path
     
     # --- Set Random Seed ---
-    from src.utils import set_seed, setup_logging, increment_path
+    # --- Set Random Seed ---
+    from src.utils.general import set_seed, setup_logging, increment_path
     set_seed(config.get('seed', 42))
     print(f"Random seed set to: {config.get('seed', 42)}")
     
@@ -161,7 +162,8 @@ def main():
     finally:
         # --- Cleanup / Organization Logic ---
         # Delegate to src/utils.py
-        from src.utils import cleanup_artifacts
+        # Delegate to src/utils.py
+        from src.utils.general import cleanup_artifacts
         cleanup_artifacts(save_dir, config)
 
 if __name__ == "__main__":
