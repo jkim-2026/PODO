@@ -35,8 +35,11 @@
 ## 데모 영상
 
 [![데모 영상](https://img.youtube.com/vi/7DkqRYQfxBg/0.jpg)](https://youtu.be/7DkqRYQfxBg?si=3mS4f99RSzwpcFdx)
+> ⚠️ 영상을 누르면 재생 됩니다.
 
+**라이브 데모**: http://3.35.182.98/ 
 
+> ⚠️ 서버는 2026년 3월 말까지 운영 예정입니다.
 
 Dashboard Screenshot
 ![대시보드](docs/images/dashboard.png)
@@ -98,7 +101,7 @@ System Architecture
 **최종 선택: YOLOv11m + TensorRT QAT INT8**
 - FP32 수준의 정밀도를 유지하며 추론 속도 극대화 (PyTorch 대비 약 2.4배)
 - 33.8 FPS로 30fps 영상 소스의 모든 프레임 실시간 처리 가능
-- **탐지 결함 종류**: scratch, hole, contamination, crack
+
 
 ## 시작하기
 
