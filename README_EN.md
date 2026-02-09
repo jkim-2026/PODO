@@ -281,7 +281,7 @@ sudo systemctl start nginx
 <td align="center" width="20%" style="border: 2px solid #e0e0e0; border-radius: 10px; padding: 20px;">
 <img src="docs/images/team/jieun.png" width="300px" alt="Jieun Kim"/>
 <br />
-<b>Jieun Kim</b>
+<b>Jee-eun Kim</b>
 <br />
 <code>Backend</code> <code>MLOps</code> <code>CI/CD</code> <code>AWS</code>
 <br />
@@ -321,4 +321,4 @@ sudo systemctl start nginx
 
 ## 📄 License
 
-This project was created as part of the [Boostcamp AI Tech](https://boostcamp.connect.or.kr/) program by NAVER Connect Foundation.
+This project was created as part of the Boostcamp AI Tech program by NAVER Connect Foundation.
