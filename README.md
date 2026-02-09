@@ -71,7 +71,7 @@
 | 백엔드 | FastAPI, SQLite (aiosqlite), Pydantic |
 | 엣지 | Python, OpenCV, NumPy, Threading/Queue |
 | 프론트엔드 | HTML/CSS/JS, Bootstrap (Paper Dashboard) |
-| 학습 | YOLOv8, QAT (Quantization-Aware Training) |
+| 학습 | YOLOv11, QAT (Quantization-Aware Training) |
 | RTSP | MediaMTX, H.264 |
 | MLOps | S3 (재라벨링 데이터셋), Slack Webhook (알림) |
 | 인프라/CI | GitHub Actions, AWS (EC2, S3, Lightsail), systemd, nginx |
