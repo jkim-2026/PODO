@@ -75,7 +75,10 @@ class InferenceWorker(threading.Thread):
                 crop = self.crop_queue.get(timeout=1.0)
                 
                 # 추론 수행
+                start = time.time()
                 results = self.model.predict(crop, conf=0.25, verbose=False)
+                inference_time = time.time() - start
+                print(f"[InferenceWorker] 추론 시간: {inference_time*1000:.1f}ms")
                 
                 # 결과 포매팅
                 payload = self._create_payload(crop, results[0])
