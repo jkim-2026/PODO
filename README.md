@@ -224,7 +224,7 @@ sudo systemctl start nginx
 <br />
 <code>Frontend</code> <code>Modeling</code>
 <br />
-<sub>JavaScript 기반 대시보드 구축, MLOps 개발, 모델 경량화</sub>
+<sub>JavaScript 기반 웹 대시보드 구축, MLOps 구현, 모델 경량화</sub>
 </td>
 <td align="center" width="20%" style="border: 2px solid #e0e0e0; border-radius: 10px; padding: 20px;">
 <img src="docs/images/team/jieun.png" width="300px" alt="김지은"/>
@@ -233,7 +233,7 @@ sudo systemctl start nginx
 <br />
 <code>Backend</code> <code>MLOps</code> <code>CI/CD</code> <code>AWS</code>
 <br />
-<sub>FastAPI로 실시간 API 설계 및 구축, MLOps 기능 설계 및 구현, GitHub Actions CI/CD</sub>
+<sub>FastAPI/DB 설계 및 구축, MLOps 기능 설계 및 구축, GitHub Actions 기반 CI/CD, AWS EC2 관리</sub>
 </td>
 <td align="center" width="20%" style="border: 2px solid #e0e0e0; border-radius: 10px; padding: 20px;">
 <img src="docs/images/team/jungho.png" width="300px" alt="위정호"/>
@@ -251,7 +251,7 @@ sudo systemctl start nginx
 <br />
 <code>Edge Device</code>
 <br />
-<sub>Jetson Orin Nano 기반 실시간 전처리 및 추론 시스템 구축</sub>
+<sub>Jetson Orin Nano 기반 환경 설정 및 추론 시스템 구축</sub>
 </td>
 <td align="center" width="20%" style="border: 2px solid #e0e0e0; border-radius: 10px; padding: 20px;">
 <img src="docs/images/team/subin.png" width="300px" alt="조수빈"/>
@@ -260,7 +260,7 @@ sudo systemctl start nginx
 <br />
 <code>PM</code> <code>AWS</code> <code>RTSP</code>
 <br />
-<sub>프로젝트 관리, 네트워크 설계, RTSP 영상 분석, AWS 인프라</sub>
+<sub>프로젝트 관리, 네트워크 보안 설정, RTSP 영상 제작 및 송출, AWS lightsail 관리</sub>
 </td>
 </tr>
 </table>
