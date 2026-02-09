@@ -11,7 +11,7 @@
 
 ### **P**CB **O**nly **D**etected **O**nce
 
-*컨베이어 벨트 위 PCB 결함을 실시간으로 탐지하는 Edge AI 시스템*
+*PCB 결함을 실시간으로 탐지하는 Edge AI 시스템*
 
 [![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=for-the-badge&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
