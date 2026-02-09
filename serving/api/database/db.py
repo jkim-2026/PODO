@@ -1,7 +1,10 @@
 import aiosqlite
 import json
 from typing import List, Dict, Optional
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
+
+# 한국 표준시 (KST, UTC+9)
+KST = timezone(timedelta(hours=9))
 from schemas.schemas import (
     DetectRequest,
     StatsResponse,
@@ -321,7 +324,7 @@ async def create_session() -> Dict:
     새 세션을 생성하고 ID와 시작 시간을 반환.
     """
     from datetime import datetime
-    started_at = datetime.now().isoformat()
+    started_at = datetime.now(KST).isoformat()
 
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
@@ -339,7 +342,7 @@ async def end_session(session_id: int) -> Optional[Dict]:
     세션을 종료하고 ended_at을 설정.
     """
     from datetime import datetime
-    ended_at = datetime.now().isoformat()
+    ended_at = datetime.now(KST).isoformat()
 
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
@@ -597,7 +600,7 @@ async def get_session_info(session_id: Optional[int]) -> SessionInfo:
         # duration 계산
         if started_at:
             start_time = datetime.fromisoformat(started_at)
-            end_time = datetime.fromisoformat(ended_at) if ended_at else datetime.now()
+            end_time = datetime.fromisoformat(ended_at) if ended_at else datetime.now(KST)
             duration_seconds = (end_time - start_time).total_seconds()
         else:
             duration_seconds = None
@@ -767,7 +770,7 @@ async def get_health(session_id: Optional[str]) -> HealthResponse:
 
     return HealthResponse(
         status=status,
-        timestamp=datetime.now().isoformat(),
+        timestamp=datetime.now(KST).isoformat(),
         session_info=session_info,
         total_inspections=stats.total_inspections,
         normal_count=stats.normal_count,
@@ -829,7 +832,7 @@ async def add_feedback(
     target_bbox_json = json.dumps(target_bbox) if target_bbox else None
 
     # 피드백 저장
-    created_at = datetime.now().isoformat()
+    created_at = datetime.now(KST).isoformat()
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
             """INSERT INTO feedback
@@ -1191,7 +1194,7 @@ async def add_bulk_feedback(
     if not await log_exists(log_id):
         raise HTTPException(status_code=404, detail=f"Inspection log {log_id} not found")
 
-    created_at = datetime.now().isoformat()
+    created_at = datetime.now(KST).isoformat()
     feedback_ids = []
 
     async with aiosqlite.connect(DB_PATH) as db:
@@ -1254,7 +1257,7 @@ async def mark_as_verified(log_id: int, verified_by: Optional[str] = None) -> No
                    verified_at = ?,
                    verified_by = ?
                WHERE id = ?""",
-            (datetime.now().isoformat(), verified_by, log_id)
+            (datetime.now(KST).isoformat(), verified_by, log_id)
         )
         await db.commit()
 

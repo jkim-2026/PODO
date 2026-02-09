@@ -1,7 +1,10 @@
 import boto3
 import logging
 import json
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
+
+# 한국 표준시 (KST, UTC+9)
+KST = timezone(timedelta(hours=9))
 from config import settings
 from botocore.exceptions import ClientError
 from typing import List, Dict, Optional
@@ -196,7 +199,7 @@ async def copy_to_needs_labeling(
         "false_negative_count": len(fn_comments),
         "original_detections": original_detections or [],
         "bbox_feedbacks": bbox_feedbacks or [],
-        "created_at": datetime.now().isoformat()
+        "created_at": datetime.now(KST).isoformat()
     }
 
     metadata_key = f"needs_labeling/metadata/{needs_labeling_filename.replace('.jpg', '.json')}"

@@ -14,9 +14,12 @@ from database import db
 from utils import s3_dataset
 from utils.image_utils import generate_presigned_url
 from config.settings import get_class_id
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import logging
 import json
+
+# 한국 표준시 (KST, UTC+9)
+KST = timezone(timedelta(hours=9))
 from typing import List, Dict, Optional
 
 logger = logging.getLogger("uvicorn")
@@ -268,7 +271,7 @@ async def create_bulk_feedback(request: BulkFeedbackRequest):
             refined_path=refined_path,
             final_label_count=len(final_labels),
             false_negative_count=fn_count,
-            created_at=datetime.now().isoformat()
+            created_at=datetime.now(KST).isoformat()
         )
 
     except HTTPException:
