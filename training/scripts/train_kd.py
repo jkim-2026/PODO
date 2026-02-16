@@ -739,15 +739,22 @@ if __name__ == "__main__":
     yolo_overrides["model"] = config["student_model"]  # Student 모델을 기준 모델로 설정
     # yolo_overrides["save_dir"] = config.get("project", "runs/kd_feature") # save_dir 설정 제거 (Ultralytics Convention 따름)
     
-    # [Fix] Project/Name ensure - Save in training/runs explicitly to avoid nesting
-    if "project" not in yolo_overrides or yolo_overrides["project"] == "runs/kd":
-        # Get the absolute path of the 'training' directory
-        # scripts/train_kd.py -> parent -> scripts -> parent -> training
-        script_dir = Path(__file__).resolve().parent.parent
-        yolo_overrides["project"] = str(script_dir / "runs")
+    # [Fix] Project/Name ensure - Save in training/runs/kd explicitly to avoid nesting
+    script_dir = Path(__file__).resolve().parent.parent
+    base_runs_dir = script_dir / "runs"
+    
+    # 설정파일에서 project 읽기 (기본값 'kd')
+    project_name = config.get("project", "kd")
+    if project_name == "runs": project_name = "kd"
+    elif project_name.startswith("runs/"): project_name = project_name.replace("runs/", "", 1)
+    
+    yolo_overrides["project"] = str(base_runs_dir / project_name)
         
     if "name" not in yolo_overrides or yolo_overrides["name"] is None:
-        yolo_overrides["name"] = config.get("exp_name", "kd_exp")
+        # 실험명 자동 생성 또는 설정값 사용
+        s_stem = Path(config["student_model"]).stem
+        t_stem = Path(config["teacher_model"]).stem
+        yolo_overrides["name"] = config.get("exp_name", f"KD_{s_stem}_from_{t_stem}")
         
     # [Fix] Optimizer Case Sensitivity (Adamw -> AdamW)
     opt = yolo_overrides.get("optimizer", "auto")
