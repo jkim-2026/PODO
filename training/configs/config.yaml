@@ -1,7 +1,7 @@
 # PCB Defect Detection Configuration V2
 
 # Experiment
-exp_name: "v11x_1280_fix"
+exp_name: "v11x_960"
 wandb_project: "" # Leave empty to disable
 seed: 42 # Random seed for reproducibility
 
@@ -29,7 +29,7 @@ val_size: 0.2      # 20% for Validation (Train=70%)
 # Training Control
 epochs: 150
 batch_size: 4
-img_size: 1280      # Input image size (e.g. 640)
+img_size: 960      # Input image size (e.g. 640)
 patience: 100     # Increased for deeper training
 close_mosaic: 30   # Refine on real images for last 30 epochs
 save: True
