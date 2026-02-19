@@ -72,16 +72,16 @@ class InferenceWorker(threading.Thread):
         while self.running:
             try:
                 # 큐에서 이미지 가져오기
-                crop = self.crop_queue.get(timeout=1.0)
+                camera_id, crop = self.crop_queue.get(timeout=1.0)
                 
                 # 추론 수행
                 start = time.time()
                 results = self.model.predict(crop, conf=0.25, verbose=False)
                 inference_time = time.time() - start
-                print(f"[InferenceWorker] 추론 시간: {inference_time*1000:.1f}ms")
+                print(f"[InferenceWorker][{camera_id}] 추론 시간: {inference_time*1000:.1f}ms")
                 
                 # 결과 포매팅
-                payload = self._create_payload(crop, results[0])
+                payload = self._create_payload(camera_id, crop, results[0])
                 
                 # 업로드 큐에 추가
                 try:
@@ -102,7 +102,7 @@ class InferenceWorker(threading.Thread):
                 print(f"[InferenceWorker] 루프 중 오류 발생: {e}")
                 time.sleep(0.1)
 
-    def _create_payload(self, crop, result):
+    def _create_payload(self, camera_id, crop, result):
         """추론 결과를 백엔드 스펙에 맞는 페이로드로 구성"""
         
         # [NEW] 강제 매핑 테이블 (QAT 엔진 메타데이터 유실 대응)
@@ -125,18 +125,19 @@ class InferenceWorker(threading.Thread):
                 "confidence": round(float(box.conf[0]), 4),
                 "bbox": [int(float(x)) for x in box.xyxy[0].tolist()]
             })
-
+ 
         # 이미지 base64 인코딩
         _, buffer = cv2.imencode('.jpg', crop)
         img_base64 = base64.b64encode(buffer).decode('utf-8')
-
+ 
         # image_id 생성
         timestamp_now = datetime.now()
-        image_id = f"PCB_{timestamp_now.strftime('%Y%m%d_%H%M%S')}"
-
+        image_id = f"PCB_{camera_id}_{timestamp_now.strftime('%Y%m%d_%H%M%S')}"
+ 
         return {
             "timestamp": timestamp_now.isoformat(),
             "image_id": image_id,
+            "camera_id": camera_id,
             "image": img_base64,
             "detections": detections,
             "session_id": self.session_id
