@@ -188,8 +188,22 @@ def main():
     print("\n🔗 Automatically triggering EMA Recalibration...")
     best_pt_path = str(trainer.best)
     if os.path.exists(best_pt_path):
-        hybrid_path = recalibrate.run_recalibration(args.config, best_pt_path)
-        print(f"✅ Full QAT Pipeline Finished. Ready for Export: {hybrid_path}")
+        try:
+            hybrid_path = recalibrate.run_recalibration(args.config, best_pt_path)
+            print(f"✅ Full QAT Pipeline Finished. Ready for Export: {hybrid_path}")
+        except Exception as e:
+            print(f"❌ EMA Recalibration Failed: {e}")
+            print(f"⚠️  FALLBACK: Reverting to standard best.pt from training: {best_pt_path}")
+            print(f"ℹ️  Note: The model might have slightly lower accuracy or batchnorm issues without recalibration.")
+            # Ensure the pipeline knows this is the artifact to use
+            # You might want to rename it or just log it.
+            # For now, we trust the DAG to pick up 'best.pt' if 'best_qat.pt' isn't explicitly required,
+            # or we can try to copy best.pt to best_qat.pt as a hard fallback.
+            fallback_path = best_pt_path.replace("best.pt", "best_qat_fallback.pt")
+            import shutil
+            shutil.copy(best_pt_path, fallback_path)
+            print(f"💾 Saved fallback model to: {fallback_path}")
+
     else:
         print(f"⚠️ Could not find best.pt at {best_pt_path}. Skipping recalibration.")
 
