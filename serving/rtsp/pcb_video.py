@@ -18,8 +18,8 @@ def create_premium_pcb_video():
     VIGNETTE_STRENGTH = 0.25   # Reduced for a cleaner look
     BOTTOM_SHADING_STRENGTH = 0.15 # Subtle darkening at the bottom
     
-    ROOT_DIR = '/data/ephemeral/home/ss/serving/rtsp'
-    OUTPUT_NAME = os.path.join(ROOT_DIR, '30fps_dark.mp4')
+    ROOT_DIR = '/home/ubuntu/rtsp'
+    OUTPUT_NAME = os.path.join(ROOT_DIR, 'new.mp4')
     
     # --- [2. SEARCH IMAGES] ---
     # Only look inside the 'images' folder to avoid picking up temp files or outputs
@@ -44,9 +44,6 @@ def create_premium_pcb_video():
         scale = target_h / h
         new_w, new_h = int(w * scale), target_h
         img_res = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
-        
-        # Add a subtle border/frame to PCB for premium look
-        img_res = cv2.copyMakeBorder(img_res, 4, 4, 4, 4, cv2.BORDER_CONSTANT, value=(200, 200, 200))
         
         processed_imgs.append(img_res)
 

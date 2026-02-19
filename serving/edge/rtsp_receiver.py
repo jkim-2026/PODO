@@ -27,17 +27,20 @@ class RTSPReceiver(threading.Thread):
         self,
         source: str,
         frame_queue: queue.Queue,
+        camera_id: str = "default",
         loop: bool = False
     ):
         """
         Args:
             source: RTSP URL 또는 비디오 파일 경로
             frame_queue: 프레임을 넣을 Queue
+            camera_id: 카메라 식별자
             loop: 비디오 파일 반복 재생 여부 (테스트용)
         """
         super().__init__(daemon=True)
         self.source = source
         self.frame_queue = frame_queue
+        self.camera_id = camera_id
         self.loop = loop
         self.running = False
         self._stop_event = threading.Event()
@@ -100,7 +103,7 @@ class RTSPReceiver(threading.Thread):
                     pass
 
             try:
-                self.frame_queue.put_nowait(frame)
+                self.frame_queue.put_nowait((self.camera_id, frame))
             except queue.Full:
                 self.drop_count += 1
 
