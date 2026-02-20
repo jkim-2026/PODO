@@ -28,7 +28,8 @@ class RTSPReceiver(threading.Thread):
         source: str,
         frame_queue: queue.Queue,
         camera_id: str = "default",
-        loop: bool = False
+        loop: bool = False,
+        metrics=None,
     ):
         """
         Args:
@@ -42,6 +43,7 @@ class RTSPReceiver(threading.Thread):
         self.frame_queue = frame_queue
         self.camera_id = camera_id
         self.loop = loop
+        self.metrics = metrics
         self.running = False
         self._stop_event = threading.Event()
 
@@ -93,19 +95,29 @@ class RTSPReceiver(threading.Thread):
             consecutive_failures = 0  # 성공 시 리셋
 
             self.frame_count += 1
+            if self.metrics:
+                self.metrics.record_input(self.camera_id)
 
             # Queue가 가득 차면 오래된 프레임 버림 (실시간성 우선)
             if self.frame_queue.full():
                 try:
                     self.frame_queue.get_nowait()
                     self.drop_count += 1
+                    if self.metrics:
+                        self.metrics.record_input_drop(self.camera_id)
+                        self.metrics.record_queue_drop("frame_queue")
                 except queue.Empty:
                     pass
 
             try:
-                self.frame_queue.put_nowait((self.camera_id, frame))
+                self.frame_queue.put_nowait((self.camera_id, frame, time.time()))
+                if self.metrics:
+                    self.metrics.update_queue_depth("frame_queue", self.frame_queue.qsize())
             except queue.Full:
                 self.drop_count += 1
+                if self.metrics:
+                    self.metrics.record_input_drop(self.camera_id)
+                    self.metrics.record_queue_drop("frame_queue")
 
         cap.release()
         self.running = False

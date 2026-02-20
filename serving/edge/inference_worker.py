@@ -23,7 +23,14 @@ class InferenceWorker(threading.Thread):
     3. 결과를 upload_queue로 전달
     """
 
-    def __init__(self, crop_queue: queue.Queue, upload_queue: queue.Queue, model_path: str, session_id: int = None):
+    def __init__(
+        self,
+        crop_queue: queue.Queue,
+        upload_queue: queue.Queue,
+        model_path: str,
+        session_id: int = None,
+        metrics=None,
+    ):
         """
         Args:
             crop_queue: 전처리기로부터 크롭된 이미지를 받는 큐
@@ -36,6 +43,7 @@ class InferenceWorker(threading.Thread):
         self.upload_queue = upload_queue
         self.model_path = model_path
         self.session_id = session_id
+        self.metrics = metrics
         self.running = False
 
         # 모델 로드 (Engine 변환 포함)
@@ -72,26 +80,69 @@ class InferenceWorker(threading.Thread):
         
         while self.running:
             try:
-                # 큐에서 이미지 가져오기
-                camera_id, crop = self.crop_queue.get(timeout=1.0)
+                # 큐에서 이미지/메타 가져오기
+                item = self.crop_queue.get(timeout=1.0)
+                camera_id = "unknown"
+                crop = None
+                frame_ts = None
+                preprocess_done_ts = None
+
+                if isinstance(item, dict):
+                    camera_id = item.get("camera_id", "unknown")
+                    crop = item.get("crop")
+                    frame_ts = item.get("frame_ts")
+                    preprocess_done_ts = item.get("preprocess_done_ts")
+                elif isinstance(item, tuple):
+                    if len(item) >= 2:
+                        camera_id = item[0]
+                        crop = item[1]
+                else:
+                    self.crop_queue.task_done()
+                    continue
+
+                if crop is None:
+                    self.crop_queue.task_done()
+                    continue
+
+                if preprocess_done_ts and self.metrics:
+                    self.metrics.record_latency(
+                        "crop_queue_wait_ms",
+                        (time.time() - preprocess_done_ts) * 1000.0,
+                    )
                 
                 # 추론 수행
                 start = time.time()
                 results = self.model.predict(crop, conf=0.25, verbose=False)
-                inference_time = time.time() - start
-                print(f"[InferenceWorker][{camera_id}] 추론 시간: {inference_time*1000:.1f}ms")
+                inference_ms = (time.time() - start) * 1000.0
+                print(f"[InferenceWorker][{camera_id}] 추론 시간: {inference_ms:.1f}ms")
+                if self.metrics:
+                    self.metrics.record_inference(camera_id, inference_ms)
                 
                 # 결과 포매팅
                 payload = self._create_payload(camera_id, crop, results[0])
+                upload_item = {
+                    "payload": payload,
+                    "meta": {
+                        "camera_id": camera_id,
+                        "frame_ts": frame_ts,
+                        "inference_done_ts": time.time(),
+                    },
+                }
                 
                 # 업로드 큐에 추가
                 try:
-                    self.upload_queue.put_nowait(payload)
+                    self.upload_queue.put_nowait(upload_item)
+                    if self.metrics:
+                        self.metrics.update_queue_depth("upload_queue", self.upload_queue.qsize())
                 except queue.Full:
                     # 업로드 큐가 가득 차면 가장 오래된 것 버림
                     try:
                         self.upload_queue.get_nowait()
-                        self.upload_queue.put_nowait(payload)
+                        if self.metrics:
+                            self.metrics.record_queue_drop("upload_queue")
+                        self.upload_queue.put_nowait(upload_item)
+                        if self.metrics:
+                            self.metrics.update_queue_depth("upload_queue", self.upload_queue.qsize())
                     except queue.Empty:
                         pass
                 

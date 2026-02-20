@@ -11,15 +11,80 @@ import signal
 import sys
 import time
 from datetime import datetime
+from typing import Dict
 
 import cv2
 import requests
 
 import config
+from metrics import EdgeMetrics, format_ms
 from preprocessor import PCBPreprocessor
 from rtsp_receiver import RTSPReceiver
+from scavenger_worker import ScavengerWorker
 from inference_worker import InferenceWorker
 from upload_worker import UploadWorker
+
+
+def _dict_delta(current: Dict[str, int], previous: Dict[str, int]) -> Dict[str, int]:
+    keys = set(current.keys()) | set(previous.keys())
+    return {key: current.get(key, 0) - previous.get(key, 0) for key in keys}
+
+
+def _print_periodic_metrics(metrics: EdgeMetrics, previous_snapshot: dict) -> dict:
+    snapshot = metrics.snapshot(config.FAILED_DIR)
+    interval = max(snapshot["ts"] - previous_snapshot["ts"], 1e-6)
+
+    delta_input = _dict_delta(snapshot["input_frames"], previous_snapshot["input_frames"])
+    delta_processed = _dict_delta(snapshot["processed_frames"], previous_snapshot["processed_frames"])
+    delta_inference = _dict_delta(snapshot["inference_count"], previous_snapshot["inference_count"])
+
+    print("\n[Metrics] === 5s Summary ===")
+    for camera_id in sorted(set(delta_input.keys()) | set(delta_processed.keys()) | set(delta_inference.keys())):
+        input_fps = delta_input.get(camera_id, 0) / interval
+        proc_fps = delta_processed.get(camera_id, 0) / interval
+        inf_fps = delta_inference.get(camera_id, 0) / interval
+        total_input = snapshot["input_frames"].get(camera_id, 0)
+        total_drop = snapshot["input_drops"].get(camera_id, 0)
+        drop_rate = (total_drop / total_input * 100.0) if total_input > 0 else 0.0
+        print(
+            f"  [{camera_id}] input={input_fps:.2f}fps, processed={proc_fps:.2f}fps, "
+            f"infer={inf_fps:.2f}fps, drop={drop_rate:.2f}% ({total_drop}/{total_input})"
+        )
+
+    total_infer_fps = (snapshot["totals"]["inference"] - previous_snapshot["totals"]["inference"]) / interval
+    print(
+        f"  throughput={total_infer_fps:.2f} crops/sec, "
+        f"upload_success={snapshot['upload_success']}, upload_fail={snapshot['upload_fail']}, "
+        f"backlog={snapshot['failed_backlog']}"
+    )
+    print(
+        f"  scavenger: success={snapshot['scavenger_success']}, fail={snapshot['scavenger_fail']}, "
+        f"expired={snapshot['scavenger_expired']}"
+    )
+    print(
+        "  queue_hwm: "
+        f"frame={snapshot['queue_high_watermark'].get('frame_queue', 0)}, "
+        f"crop={snapshot['queue_high_watermark'].get('crop_queue', 0)}, "
+        f"upload={snapshot['queue_high_watermark'].get('upload_queue', 0)}"
+    )
+    print(
+        "  latency(ms) p50/p95: "
+        f"frame_wait={format_ms(snapshot['latency']['frame_queue_wait_ms']['p50'])}/"
+        f"{format_ms(snapshot['latency']['frame_queue_wait_ms']['p95'])}, "
+        f"preprocess={format_ms(snapshot['latency']['preprocess_ms']['p50'])}/"
+        f"{format_ms(snapshot['latency']['preprocess_ms']['p95'])}, "
+        f"crop_wait={format_ms(snapshot['latency']['crop_queue_wait_ms']['p50'])}/"
+        f"{format_ms(snapshot['latency']['crop_queue_wait_ms']['p95'])}, "
+        f"inference={format_ms(snapshot['latency']['inference_ms']['p50'])}/"
+        f"{format_ms(snapshot['latency']['inference_ms']['p95'])}, "
+        f"upload_wait={format_ms(snapshot['latency']['upload_queue_wait_ms']['p50'])}/"
+        f"{format_ms(snapshot['latency']['upload_queue_wait_ms']['p95'])}, "
+        f"upload={format_ms(snapshot['latency']['upload_ms']['p50'])}/"
+        f"{format_ms(snapshot['latency']['upload_ms']['p95'])}, "
+        f"e2e={format_ms(snapshot['latency']['e2e_ms']['p50'])}/"
+        f"{format_ms(snapshot['latency']['e2e_ms']['p95'])}"
+    )
+    return snapshot
 
 
 def start_session(session_url: str) -> int:
@@ -108,6 +173,11 @@ def main():
         help="세션 관리 비활성화"
     )
     parser.add_argument(
+        "--no-scavenger",
+        action="store_true",
+        help="실패 파일 자동 재전송 워커 비활성화"
+    )
+    parser.add_argument(
         "--max-crops",
         type=int,
         default=0,
@@ -154,17 +224,45 @@ def main():
     frame_queue = queue.Queue(maxsize=config.FRAME_QUEUE_SIZE * len(input_sources))
     crop_queue = queue.Queue(maxsize=config.CROP_QUEUE_SIZE)
     upload_queue = queue.Queue(maxsize=config.UPLOAD_QUEUE_SIZE)
+    metrics = EdgeMetrics(latency_buffer_size=config.METRICS_LATENCY_BUFFER_SIZE)
 
     # 1. 업로드 워커 시작
-    upload_worker = UploadWorker(upload_queue)
+    upload_worker = UploadWorker(upload_queue, metrics=metrics, api_url=config.API_URL)
     upload_worker.start()
+
+    # 1-1. 재전송 워커 시작
+    scavenger_worker = None
+    if config.SCAVENGER_ENABLED and not args.no_scavenger:
+        scavenger_worker = ScavengerWorker(
+            failed_dir=config.FAILED_DIR,
+            api_url=config.API_URL,
+            metrics=metrics,
+            poll_interval_sec=config.SCAVENGER_POLL_INTERVAL_SEC,
+            base_backoff_sec=config.SCAVENGER_BASE_BACKOFF_SEC,
+            max_backoff_sec=config.SCAVENGER_MAX_BACKOFF_SEC,
+            jitter_ratio=config.SCAVENGER_JITTER_RATIO,
+            max_retries=config.SCAVENGER_MAX_RETRIES,
+            ttl_sec=config.SCAVENGER_TTL_SEC,
+        )
+        scavenger_worker.start()
 
     # 2. 추론 워커 초기화
     print(f"[Main] 추론 워커 초기화 중 (모델: {config.MODEL_PATH})...")
     try:
-        inference_worker = InferenceWorker(crop_queue, upload_queue, config.MODEL_PATH, session_id=session_id)
+        inference_worker = InferenceWorker(
+            crop_queue,
+            upload_queue,
+            config.MODEL_PATH,
+            session_id=session_id,
+            metrics=metrics,
+        )
     except Exception as e:
         print(f"[Main] 추론 워커 초기화 실패: {e}")
+        upload_worker.stop()
+        upload_worker.join(timeout=2.0)
+        if scavenger_worker:
+            scavenger_worker.stop()
+            scavenger_worker.join(timeout=2.0)
         if session_id:
             end_session(args.session_url, session_id)
         sys.exit(1)
@@ -173,7 +271,7 @@ def main():
     receivers = []
     for i, source in enumerate(input_sources):
         camera_id = f"cam_{i+1}"
-        receiver = RTSPReceiver(source, frame_queue, camera_id=camera_id, loop=args.loop)
+        receiver = RTSPReceiver(source, frame_queue, camera_id=camera_id, loop=args.loop, metrics=metrics)
         receiver.start()
         receivers.append(receiver)
 
@@ -211,22 +309,41 @@ def main():
     print(f"  - API: {config.API_URL}")
     print(f"  - 모델: {config.MODEL_PATH}")
     print(f"  - 세션 ID: {session_id if session_id else '없음'}")
+    print(f"  - Scavenger: {'활성화' if scavenger_worker else '비활성화'}")
 
     crop_count = 0
     frame_count = 0
     start_time = time.time()
+    last_metrics_ts = start_time
+    last_metrics_snapshot = metrics.snapshot(config.FAILED_DIR)
 
     try:
         while not shutdown_flag:
             try:
-                # 큐에서 (camera_id, frame) 튜플을 가져옴
-                camera_id, frame = frame_queue.get(timeout=1.0)
+                # 큐에서 (camera_id, frame, frame_ts) 튜플을 가져옴
+                frame_item = frame_queue.get(timeout=1.0)
             except queue.Empty:
                 if all(not r.is_running() for r in receivers):
                     break
                 continue
 
+            camera_id = "unknown"
+            frame = None
+            frame_ts = None
+
+            if isinstance(frame_item, tuple):
+                if len(frame_item) == 3:
+                    camera_id, frame, frame_ts = frame_item
+                elif len(frame_item) >= 2:
+                    camera_id, frame = frame_item[0], frame_item[1]
+            if frame is None:
+                continue
+
             frame_count += 1
+            metrics.record_processed(camera_id)
+            metrics.update_queue_depth("frame_queue", frame_queue.qsize())
+            if frame_ts:
+                metrics.record_latency("frame_queue_wait_ms", (time.time() - frame_ts) * 1000.0)
 
             preprocessor = preprocessors.get(camera_id)
             if preprocessor is None:
@@ -235,18 +352,31 @@ def main():
                 preprocessors[camera_id] = preprocessor
                 print(f"[Main] 신규 카메라 전처리기 생성: {camera_id}")
 
+            preprocess_start = time.time()
             cropped = preprocessor.process_frame(frame)
+            preprocess_ms = (time.time() - preprocess_start) * 1000.0
+            metrics.record_latency("preprocess_ms", preprocess_ms)
 
             if cropped is not None:
                 crop_count += 1
+                metrics.record_crop(camera_id)
                 print(f"[Main][{camera_id}] [#{crop_count}] PCB 포착! ({cropped.shape[1]}x{cropped.shape[0]})")
 
+                crop_item = {
+                    "camera_id": camera_id,
+                    "crop": cropped,
+                    "frame_ts": frame_ts,
+                    "preprocess_done_ts": time.time(),
+                }
                 try:
-                    crop_queue.put_nowait((camera_id, cropped))
+                    crop_queue.put_nowait(crop_item)
+                    metrics.update_queue_depth("crop_queue", crop_queue.qsize())
                 except queue.Full:
                     try:
                         crop_queue.get_nowait()
-                        crop_queue.put_nowait((camera_id, cropped))
+                        metrics.record_queue_drop("crop_queue")
+                        crop_queue.put_nowait(crop_item)
+                        metrics.update_queue_depth("crop_queue", crop_queue.qsize())
                     except queue.Empty:
                         pass
 
@@ -255,6 +385,11 @@ def main():
 
                 if args.max_crops > 0 and crop_count >= args.max_crops:
                     break
+
+            now = time.time()
+            if now - last_metrics_ts >= config.METRICS_LOG_INTERVAL_SEC:
+                last_metrics_snapshot = _print_periodic_metrics(metrics, last_metrics_snapshot)
+                last_metrics_ts = now
 
     except Exception as e:
         print(f"[Main] 실행 중 오류 발생: {e}")
@@ -266,11 +401,15 @@ def main():
             r.stop()
         inference_worker.stop()
         upload_worker.stop()
+        if scavenger_worker:
+            scavenger_worker.stop()
 
         for r in receivers:
             r.join(timeout=2.0)
         inference_worker.join(timeout=2.0)
         upload_worker.join(timeout=2.0)
+        if scavenger_worker:
+            scavenger_worker.join(timeout=2.0)
 
         if session_id:
             end_session(args.session_url, session_id)
@@ -286,6 +425,54 @@ def main():
         for r in receivers:
             print(f"  [{r.camera_id}] 상태: {r.get_stats()}")
         print(f"  세션 ID: {session_id if session_id else '없음'}")
+
+        final_snapshot = metrics.snapshot(config.FAILED_DIR)
+        print("\n[Metrics] === Final Summary ===")
+        for camera_id in sorted(final_snapshot["input_frames"].keys()):
+            total_input = final_snapshot["input_frames"].get(camera_id, 0)
+            total_drop = final_snapshot["input_drops"].get(camera_id, 0)
+            processed = final_snapshot["processed_frames"].get(camera_id, 0)
+            inferred = final_snapshot["inference_count"].get(camera_id, 0)
+            drop_rate = (total_drop / total_input * 100.0) if total_input > 0 else 0.0
+            print(
+                f"  [{camera_id}] input={total_input}, processed={processed}, "
+                f"inference={inferred}, drop={total_drop} ({drop_rate:.2f}%)"
+            )
+
+        print(
+            f"  upload_success={final_snapshot['upload_success']}, "
+            f"upload_fail={final_snapshot['upload_fail']}, "
+            f"upload_success_rate={final_snapshot['upload_success_rate']:.2f}%, "
+            f"backlog={final_snapshot['failed_backlog']}"
+        )
+        print(
+            f"  scavenger_success={final_snapshot['scavenger_success']}, "
+            f"scavenger_fail={final_snapshot['scavenger_fail']}, "
+            f"scavenger_expired={final_snapshot['scavenger_expired']}"
+        )
+        print(
+            "  queue_hwm: "
+            f"frame={final_snapshot['queue_high_watermark'].get('frame_queue', 0)}, "
+            f"crop={final_snapshot['queue_high_watermark'].get('crop_queue', 0)}, "
+            f"upload={final_snapshot['queue_high_watermark'].get('upload_queue', 0)}"
+        )
+        print(
+            "  latency(ms) p50/p95: "
+            f"frame_wait={format_ms(final_snapshot['latency']['frame_queue_wait_ms']['p50'])}/"
+            f"{format_ms(final_snapshot['latency']['frame_queue_wait_ms']['p95'])}, "
+            f"preprocess={format_ms(final_snapshot['latency']['preprocess_ms']['p50'])}/"
+            f"{format_ms(final_snapshot['latency']['preprocess_ms']['p95'])}, "
+            f"crop_wait={format_ms(final_snapshot['latency']['crop_queue_wait_ms']['p50'])}/"
+            f"{format_ms(final_snapshot['latency']['crop_queue_wait_ms']['p95'])}, "
+            f"inference={format_ms(final_snapshot['latency']['inference_ms']['p50'])}/"
+            f"{format_ms(final_snapshot['latency']['inference_ms']['p95'])}, "
+            f"upload_wait={format_ms(final_snapshot['latency']['upload_queue_wait_ms']['p50'])}/"
+            f"{format_ms(final_snapshot['latency']['upload_queue_wait_ms']['p95'])}, "
+            f"upload={format_ms(final_snapshot['latency']['upload_ms']['p50'])}/"
+            f"{format_ms(final_snapshot['latency']['upload_ms']['p95'])}, "
+            f"e2e={format_ms(final_snapshot['latency']['e2e_ms']['p50'])}/"
+            f"{format_ms(final_snapshot['latency']['e2e_ms']['p95'])}"
+        )
 
 
 if __name__ == "__main__":
