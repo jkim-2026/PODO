@@ -8,8 +8,8 @@ PCB 결함 탐지 시스템의 Edge 실행 모듈입니다.
 현재 파이프라인은 아래 구조입니다.
 
 ```
-RTSPReceiver(cam별 thread) -> shared frame_queue
-                           -> main 전처리 루프(단일)
+RTSPReceiver(cam별 thread) -> frame_queue(cam별 독립)
+                           -> main 전처리 루프(단일, 라운드로빈 소비)
                            -> shared crop_queue
                            -> InferenceWorker(단일, 모델 1개)
                            -> shared upload_queue
@@ -172,17 +172,15 @@ uv run python main.py -a "http://127.0.0.1:9999/detect/" --no-session -n 3
 
 ## 8. 현재 한계 (정직한 상태 공유)
 
-- frame/crop/upload 큐는 아직 shared 구조
+- 전처리/추론/업로드는 여전히 단일 소비자 구조
 - RTSP는 OpenCV FFMPEG 경로 기준 (HW decode 전환 전)
-- 채널 공정성 스케줄링(P1-1) 미적용
 
-즉 현재는 멀티카메라 동작은 가능하지만, 극단 부하/네트워크 불안정 상황에서는 업로드 구간 병목 영향이 큽니다.
+즉 현재는 카메라별 frame queue 분리 + 공정 소비는 적용됐지만, 업로드 구간 병목 영향은 여전히 큽니다.
 
 ## 9. 다음 개선 우선순위
 
-1. P1-1 카메라별 frame queue 분리 + 공정 스케줄링
-2. P1-E1 GStreamer + `nvv4l2decoder` HW decode
-3. P1-2 큐 스케일링/경보 고도화
-4. P1-4 RTSP 재연결 강화
-5. P1-E2 GPU 전처리 POC
-6. M-2 Before/After 벤치마크 리포트
+1. P1-E1 GStreamer + `nvv4l2decoder` HW decode
+2. P1-2 큐 스케일링/경보 고도화
+3. P1-4 RTSP 재연결 강화
+4. P1-E2 GPU 전처리 POC
+5. M-2 Before/After 벤치마크 리포트

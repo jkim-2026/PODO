@@ -60,6 +60,36 @@ def _diagnose_bottleneck(snapshot: dict, upload_queue_maxsize: int) -> str:
     return "No dominant bottleneck signal (balanced or insufficient evidence)"
 
 
+def _pull_next_frame_round_robin(
+    camera_ids,
+    frame_queues,
+    rr_cursor: int,
+):
+    """
+    camera별 frame queue를 라운드로빈으로 순회하며 다음 프레임을 가져온다.
+    Returns:
+      item, next_cursor, total_depth
+    """
+    if not camera_ids:
+        return None, rr_cursor, 0
+
+    n = len(camera_ids)
+    total_depth = 0
+    for offset in range(n):
+        idx = (rr_cursor + offset) % n
+        camera_id = camera_ids[idx]
+        q = frame_queues[camera_id]
+        total_depth += q.qsize()
+        try:
+            item = q.get_nowait()
+            next_cursor = (idx + 1) % n
+            return item, next_cursor, total_depth
+        except queue.Empty:
+            continue
+
+    return None, rr_cursor, total_depth
+
+
 def _print_periodic_metrics(metrics: EdgeMetrics, previous_snapshot: dict) -> dict:
     snapshot = metrics.snapshot(config.FAILED_DIR)
     interval = max(snapshot["ts"] - previous_snapshot["ts"], 1e-6)
@@ -123,6 +153,24 @@ def _print_periodic_metrics(metrics: EdgeMetrics, previous_snapshot: dict) -> di
         f"{snapshot['queue_drops'].get('crop_queue', 0)}/"
         f"{snapshot['queue_drops'].get('upload_queue', 0)}"
     )
+    frame_hwm_by_cam = {
+        key.replace("frame_queue_", ""): value
+        for key, value in snapshot["queue_high_watermark"].items()
+        if key.startswith("frame_queue_")
+    }
+    if frame_hwm_by_cam:
+        hwm_text = ", ".join(f"{cam}:{depth}" for cam, depth in sorted(frame_hwm_by_cam.items()))
+        print(f"  frame_queue_hwm_by_cam: {hwm_text}")
+
+    frame_drop_by_cam = {
+        key.replace("frame_queue_", ""): value
+        for key, value in snapshot["queue_drops"].items()
+        if key.startswith("frame_queue_")
+    }
+    if frame_drop_by_cam:
+        drop_text = ", ".join(f"{cam}:{cnt}" for cam, cnt in sorted(frame_drop_by_cam.items()))
+        print(f"  frame_queue_drop_by_cam: {drop_text}")
+
     print(
         "  latency(ms) p50/p95: "
         f"frame_wait={format_ms(snapshot['latency']['frame_queue_wait_ms']['p50'])}/"
@@ -278,7 +326,8 @@ def main():
         session_id = start_session(args.session_url)
 
     # Queue 생성
-    frame_queue = queue.Queue(maxsize=config.FRAME_QUEUE_SIZE * len(input_sources))
+    # P1-1: camera별 frame queue 분리 (공정 스케줄링 기반)
+    frame_queues = {}
     crop_queue = queue.Queue(maxsize=config.CROP_QUEUE_SIZE)
     upload_queue = queue.Queue(maxsize=config.UPLOAD_QUEUE_SIZE)
     metrics = EdgeMetrics(latency_buffer_size=config.METRICS_LATENCY_BUFFER_SIZE)
@@ -328,7 +377,16 @@ def main():
     receivers = []
     for i, source in enumerate(input_sources):
         camera_id = f"cam_{i+1}"
-        receiver = RTSPReceiver(source, frame_queue, camera_id=camera_id, loop=args.loop, metrics=metrics)
+        frame_queue = queue.Queue(maxsize=config.FRAME_QUEUE_SIZE)
+        frame_queues[camera_id] = frame_queue
+        receiver = RTSPReceiver(
+            source,
+            frame_queue,
+            camera_id=camera_id,
+            loop=args.loop,
+            metrics=metrics,
+            queue_name=f"frame_queue_{camera_id}",
+        )
         receiver.start()
         receivers.append(receiver)
 
@@ -373,15 +431,24 @@ def main():
     start_time = time.time()
     last_metrics_ts = start_time
     last_metrics_snapshot = metrics.snapshot(config.FAILED_DIR)
+    camera_ids = [r.camera_id for r in receivers]
+    rr_cursor = 0
 
     try:
         while not shutdown_flag:
-            try:
-                # 큐에서 (camera_id, frame, frame_ts) 튜플을 가져옴
-                frame_item = frame_queue.get(timeout=1.0)
-            except queue.Empty:
-                if all(not r.is_running() for r in receivers):
+            # camera별 frame queue를 라운드로빈으로 순회하여 공정 소비
+            frame_item, rr_cursor, total_frame_depth = _pull_next_frame_round_robin(
+                camera_ids,
+                frame_queues,
+                rr_cursor,
+            )
+            metrics.update_queue_depth("frame_queue", total_frame_depth)
+            if frame_item is None:
+                all_receivers_stopped = all(not r.is_running() for r in receivers)
+                all_frame_queues_empty = all(frame_queues[cid].empty() for cid in camera_ids)
+                if all_receivers_stopped and all_frame_queues_empty:
                     break
+                time.sleep(0.002)
                 continue
 
             camera_id = "unknown"
@@ -398,7 +465,6 @@ def main():
 
             frame_count += 1
             metrics.record_processed(camera_id)
-            metrics.update_queue_depth("frame_queue", frame_queue.qsize())
             if frame_ts:
                 metrics.record_latency("frame_queue_wait_ms", (time.time() - frame_ts) * 1000.0)
 
@@ -531,6 +597,24 @@ def main():
             f"{final_snapshot['queue_drops'].get('crop_queue', 0)}/"
             f"{final_snapshot['queue_drops'].get('upload_queue', 0)}"
         )
+        frame_hwm_by_cam = {
+            key.replace("frame_queue_", ""): value
+            for key, value in final_snapshot["queue_high_watermark"].items()
+            if key.startswith("frame_queue_")
+        }
+        if frame_hwm_by_cam:
+            hwm_text = ", ".join(f"{cam}:{depth}" for cam, depth in sorted(frame_hwm_by_cam.items()))
+            print(f"  frame_queue_hwm_by_cam: {hwm_text}")
+
+        frame_drop_by_cam = {
+            key.replace("frame_queue_", ""): value
+            for key, value in final_snapshot["queue_drops"].items()
+            if key.startswith("frame_queue_")
+        }
+        if frame_drop_by_cam:
+            drop_text = ", ".join(f"{cam}:{cnt}" for cam, cnt in sorted(frame_drop_by_cam.items()))
+            print(f"  frame_queue_drop_by_cam: {drop_text}")
+
         print(
             "  latency(ms) p50/p95: "
             f"frame_wait={format_ms(final_snapshot['latency']['frame_queue_wait_ms']['p50'])}/"

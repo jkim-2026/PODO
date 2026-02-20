@@ -30,6 +30,7 @@ class RTSPReceiver(threading.Thread):
         camera_id: str = "default",
         loop: bool = False,
         metrics=None,
+        queue_name: str = "frame_queue",
     ):
         """
         Args:
@@ -44,6 +45,7 @@ class RTSPReceiver(threading.Thread):
         self.camera_id = camera_id
         self.loop = loop
         self.metrics = metrics
+        self.queue_name = queue_name
         self.running = False
         self._stop_event = threading.Event()
 
@@ -105,19 +107,23 @@ class RTSPReceiver(threading.Thread):
                     self.drop_count += 1
                     if self.metrics:
                         self.metrics.record_input_drop(self.camera_id)
-                        self.metrics.record_queue_drop("frame_queue")
+                        self.metrics.record_queue_drop(self.queue_name)
+                        if self.queue_name != "frame_queue":
+                            self.metrics.record_queue_drop("frame_queue")
                 except queue.Empty:
                     pass
 
             try:
                 self.frame_queue.put_nowait((self.camera_id, frame, time.time()))
                 if self.metrics:
-                    self.metrics.update_queue_depth("frame_queue", self.frame_queue.qsize())
+                    self.metrics.update_queue_depth(self.queue_name, self.frame_queue.qsize())
             except queue.Full:
                 self.drop_count += 1
                 if self.metrics:
                     self.metrics.record_input_drop(self.camera_id)
-                    self.metrics.record_queue_drop("frame_queue")
+                    self.metrics.record_queue_drop(self.queue_name)
+                    if self.queue_name != "frame_queue":
+                        self.metrics.record_queue_drop("frame_queue")
 
         cap.release()
         self.running = False
