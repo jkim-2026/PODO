@@ -233,8 +233,32 @@ class PCBTrainer:
         # Run Final Evaluation on Best Model
         self.run_final_eval(data_yaml)
         
+        # [NEW] Upload to WandB Artifacts
+        best_model_path = os.path.join(self.model.trainer.save_dir, "weights", "best.pt")
+        if self.config.get('wandb_project') and os.path.exists(best_model_path):
+            self.upload_to_wandb(best_model_path)
+
         # Return the actual save directory (Path object) to handle auto-increment (e.g. baseline2)
         return self.model.trainer.save_dir
+
+    def upload_to_wandb(self, best_model_path):
+        """
+        Uploads the best model to WandB Artifacts with 'production' tag.
+        """
+        import wandb
+        print(f"\n[WandB] uploading {best_model_path} to {self.config['wandb_project']}...")
+        try:
+            artifact = wandb.Artifact(
+                name="pcb-model", 
+                type="model",
+                description=f"Trained from {self.config['exp_name']}"
+            )
+            artifact.add_file(best_model_path)
+            # Log artifact with both 'latest' and 'production' tags
+            wandb.log_artifact(artifact, aliases=["latest", "production"])
+            print("[WandB] Artifact upload successful with 'production' tag.")
+        except Exception as e:
+            print(f"[WandB] Artifact upload failed: {e}")
 
     def run_final_eval(self, data_yaml):
         """

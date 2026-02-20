@@ -2,7 +2,7 @@
 
 # Experiment
 exp_name: "v11x_960"
-wandb_project: "" # Leave empty to disable
+wandb_project: "ckgqf1313-boostcamp/PODO" # Leave empty to disable
 seed: 42 # Random seed for reproducibility
 
 # Dynamic Module Selection

@@ -36,10 +36,42 @@ class InferenceWorker(threading.Thread):
         self.model_path = model_path
         self.session_id = session_id
         self.running = False
-
+        
+        # [NEW] 비동기 모델 업데이트 스레드 시작
+        self.model_lock = threading.Lock()
+        from model_manager import ModelManager
+        self.model_manager = ModelManager()
+        
         # 모델 로드 (Engine 변환 포함)
-        self.model = self._load_model(config.MODEL_PATH)
+        with self.model_lock:
+            self.model = self._load_model(config.MODEL_PATH)
         print(f"[InferenceWorker] 모델 로드 완료: {config.MODEL_PATH}")
+
+        # 모니터링 스레드 실행
+        self.monitor_thread = threading.Thread(target=self._monitor_model_updates, daemon=True)
+        self.monitor_thread.start()
+
+    def _monitor_model_updates(self):
+        """별도 스레드에서 주기적으로 WandB를 체크하고 모델을 업데이트함"""
+        print(f"[InferenceWorker] 모델 업데이트 모니터링 시작 (주기: {config.CHECK_INTERVAL}초)")
+        while self.running:
+            try:
+                # 1. WandB 체크 및 필요 시 엔진 변환 (이 작업이 오래 걸려도 추론은 멈추지 않음)
+                new_engine_path = self.model_manager.check_for_updates()
+                
+                if new_engine_path:
+                    # 2. 변환이 완료된 경우에만 Lock을 걸고 모델 즉시 교체
+                    print("[InferenceWorker] 새 모델 준비 완료. 교체를 시작합니다...")
+                    with self.model_lock:
+                        # 이미 .engine 파일이 준비되었으므로 즉시 로드됨
+                        self.model = YOLO(new_engine_path, task='detect')
+                    print("[InferenceWorker] 모델 핫스왑(Hot-swap) 완료.")
+                
+            except Exception as e:
+                print(f"[InferenceWorker] 모니터링 루프 오류: {e}")
+            
+            # 다음 주기까지 대기
+            time.sleep(config.CHECK_INTERVAL)
 
     def _load_model(self, model_path: str):
         """
@@ -74,9 +106,10 @@ class InferenceWorker(threading.Thread):
                 # 큐에서 이미지 가져오기
                 camera_id, crop = self.crop_queue.get(timeout=1.0)
                 
-                # 추론 수행
+                # 추론 수행 (Lock 적용하여 모델 교체와 충돌 방지)
                 start = time.time()
-                results = self.model.predict(crop, conf=0.25, verbose=False)
+                with self.model_lock:
+                    results = self.model.predict(crop, conf=0.25, verbose=False)
                 inference_time = time.time() - start
                 print(f"[InferenceWorker][{camera_id}] 추론 시간: {inference_time*1000:.1f}ms")
                 

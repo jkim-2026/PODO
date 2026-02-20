@@ -32,3 +32,8 @@ UPLOAD_QUEUE_SIZE = 20
 STORAGE_DIR = os.path.join(BASE_DIR, "storage")
 FAILED_DIR = os.path.join(STORAGE_DIR, "failed")
 DEBUG_DIR = os.path.join(BASE_DIR, "debug_crops")
+
+# [NEW] WandB MLOps 설정
+WANDB_PROJECT = "ckgqf1313-boostcamp/PODO"
+WANDB_ARTIFACT_NAME = "pcb-model:production"
+CHECK_INTERVAL = 300  # 새 모델 확인 주기 (초)
