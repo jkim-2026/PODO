@@ -42,6 +42,8 @@ htmlcov/
 
 # Training
 training/PCB_DATASET/
+runs/
+**/runs/
 training/runs/
 *.pt
 
@@ -66,3 +68,4 @@ CLAUDE.md
 
 # Edge 디버그
 serving/edge/debug_crops/
+training/report/
