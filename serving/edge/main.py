@@ -30,6 +30,36 @@ def _dict_delta(current: Dict[str, int], previous: Dict[str, int]) -> Dict[str, 
     return {key: current.get(key, 0) - previous.get(key, 0) for key in keys}
 
 
+def _safe_rate(numerator: float, denominator: float) -> float:
+    if denominator <= 0:
+        return 0.0
+    return numerator / denominator
+
+
+def _diagnose_bottleneck(snapshot: dict, upload_queue_maxsize: int) -> str:
+    upload_wait_p95 = snapshot["latency"]["upload_queue_wait_ms"]["p95"] or 0.0
+    upload_p95 = snapshot["latency"]["upload_ms"]["p95"] or 0.0
+    inference_p95 = snapshot["latency"]["inference_ms"]["p95"] or 0.0
+    frame_wait_p95 = snapshot["latency"]["frame_queue_wait_ms"]["p95"] or 0.0
+    preprocess_p95 = snapshot["latency"]["preprocess_ms"]["p95"] or 0.0
+
+    upload_hwm = snapshot["queue_high_watermark"].get("upload_queue", 0)
+    frame_hwm = snapshot["queue_high_watermark"].get("frame_queue", 0)
+
+    upload_suspect = (
+        upload_hwm >= max(1, int(upload_queue_maxsize * 0.9))
+        or upload_wait_p95 >= 1000.0
+        or upload_p95 >= 1000.0
+    )
+    if upload_suspect and upload_wait_p95 > max(inference_p95 * 2.0, 200.0):
+        return "Upload path bottleneck suspected (network/backend/upload queue)"
+
+    if frame_hwm >= 1 and frame_wait_p95 > max(preprocess_p95 * 2.0, 30.0):
+        return "Frame ingest/preprocess bottleneck suspected"
+
+    return "No dominant bottleneck signal (balanced or insufficient evidence)"
+
+
 def _print_periodic_metrics(metrics: EdgeMetrics, previous_snapshot: dict) -> dict:
     snapshot = metrics.snapshot(config.FAILED_DIR)
     interval = max(snapshot["ts"] - previous_snapshot["ts"], 1e-6)
@@ -37,8 +67,21 @@ def _print_periodic_metrics(metrics: EdgeMetrics, previous_snapshot: dict) -> di
     delta_input = _dict_delta(snapshot["input_frames"], previous_snapshot["input_frames"])
     delta_processed = _dict_delta(snapshot["processed_frames"], previous_snapshot["processed_frames"])
     delta_inference = _dict_delta(snapshot["inference_count"], previous_snapshot["inference_count"])
+    delta_upload_success = snapshot["upload_success"] - previous_snapshot["upload_success"]
+    delta_upload_fail = snapshot["upload_fail"] - previous_snapshot["upload_fail"]
+    delta_scavenger_success = snapshot["scavenger_success"] - previous_snapshot["scavenger_success"]
+
+    total_input_fps = (snapshot["totals"]["input_frames"] - previous_snapshot["totals"]["input_frames"]) / interval
+    total_processed_fps = (
+        snapshot["totals"]["processed_frames"] - previous_snapshot["totals"]["processed_frames"]
+    ) / interval
+    total_infer_fps = (snapshot["totals"]["inference"] - previous_snapshot["totals"]["inference"]) / interval
 
     print("\n[Metrics] === 5s Summary ===")
+    print(
+        f"  throughput(total): input={total_input_fps:.2f}fps, "
+        f"processed={total_processed_fps:.2f}fps, inference={total_infer_fps:.2f}crops/s"
+    )
     for camera_id in sorted(set(delta_input.keys()) | set(delta_processed.keys()) | set(delta_inference.keys())):
         input_fps = delta_input.get(camera_id, 0) / interval
         proc_fps = delta_processed.get(camera_id, 0) / interval
@@ -48,24 +91,37 @@ def _print_periodic_metrics(metrics: EdgeMetrics, previous_snapshot: dict) -> di
         drop_rate = (total_drop / total_input * 100.0) if total_input > 0 else 0.0
         print(
             f"  [{camera_id}] input={input_fps:.2f}fps, processed={proc_fps:.2f}fps, "
-            f"infer={inf_fps:.2f}fps, drop={drop_rate:.2f}% ({total_drop}/{total_input})"
+            f"infer={inf_fps:.2f}crops/s, drop={drop_rate:.2f}% ({total_drop}/{total_input})"
         )
 
-    total_infer_fps = (snapshot["totals"]["inference"] - previous_snapshot["totals"]["inference"]) / interval
+    interval_live_attempt = delta_upload_success + delta_upload_fail
+    interval_live_success_rate = _safe_rate(delta_upload_success * 100.0, interval_live_attempt)
+    cumulative_inference = snapshot["totals"]["inference"]
+    cumulative_effective_delivery = snapshot["upload_success"] + snapshot["scavenger_success"]
+    cumulative_effective_delivery_rate = _safe_rate(cumulative_effective_delivery * 100.0, cumulative_inference)
+
     print(
-        f"  throughput={total_infer_fps:.2f} crops/sec, "
-        f"upload_success={snapshot['upload_success']}, upload_fail={snapshot['upload_fail']}, "
+        f"  upload(live): success={snapshot['upload_success']}, fail={snapshot['upload_fail']} "
+        f"(interval success={interval_live_success_rate:.2f}%)"
+    )
+    print(
+        f"  delivery(effective): {(cumulative_effective_delivery_rate):.2f}% "
+        f"(live+scavenger success={cumulative_effective_delivery} / inference={cumulative_inference}), "
         f"backlog={snapshot['failed_backlog']}"
     )
     print(
-        f"  scavenger: success={snapshot['scavenger_success']}, fail={snapshot['scavenger_fail']}, "
-        f"expired={snapshot['scavenger_expired']}"
+        f"  scavenger: success={snapshot['scavenger_success']} (+{delta_scavenger_success}), "
+        f"fail={snapshot['scavenger_fail']}, expired={snapshot['scavenger_expired']}"
     )
     print(
         "  queue_hwm: "
         f"frame={snapshot['queue_high_watermark'].get('frame_queue', 0)}, "
         f"crop={snapshot['queue_high_watermark'].get('crop_queue', 0)}, "
-        f"upload={snapshot['queue_high_watermark'].get('upload_queue', 0)}"
+        f"upload={snapshot['queue_high_watermark'].get('upload_queue', 0)} "
+        f"| queue_drop(frame/crop/upload)="
+        f"{snapshot['queue_drops'].get('frame_queue', 0)}/"
+        f"{snapshot['queue_drops'].get('crop_queue', 0)}/"
+        f"{snapshot['queue_drops'].get('upload_queue', 0)}"
     )
     print(
         "  latency(ms) p50/p95: "
@@ -84,6 +140,7 @@ def _print_periodic_metrics(metrics: EdgeMetrics, previous_snapshot: dict) -> di
         f"e2e={format_ms(snapshot['latency']['e2e_ms']['p50'])}/"
         f"{format_ms(snapshot['latency']['e2e_ms']['p95'])}"
     )
+    print(f"  diagnosis: {_diagnose_bottleneck(snapshot, config.UPLOAD_QUEUE_SIZE)}")
     return snapshot
 
 
@@ -415,13 +472,15 @@ def main():
             end_session(args.session_url, session_id)
 
         elapsed = time.time() - start_time
-        fps = frame_count / elapsed if elapsed > 0 else 0
+        aggregate_processed_fps = frame_count / elapsed if elapsed > 0 else 0.0
+        per_camera_avg_fps = aggregate_processed_fps / len(receivers) if receivers else 0.0
 
         print("\n[Main] === 최종 통계 ===")
         print(f"  처리 프레임: {frame_count}")
         print(f"  포착된 PCB: {crop_count}")
         print(f"  실행 시간: {elapsed:.1f}초")
-        print(f"  평균 성능: {fps:.1f} FPS")
+        print(f"  총 처리량(Aggregate Processed FPS): {aggregate_processed_fps:.1f}")
+        print(f"  카메라당 평균 처리 FPS(참고): {per_camera_avg_fps:.1f}")
         for r in receivers:
             print(f"  [{r.camera_id}] 상태: {r.get_stats()}")
         print(f"  세션 ID: {session_id if session_id else '없음'}")
@@ -434,16 +493,24 @@ def main():
             processed = final_snapshot["processed_frames"].get(camera_id, 0)
             inferred = final_snapshot["inference_count"].get(camera_id, 0)
             drop_rate = (total_drop / total_input * 100.0) if total_input > 0 else 0.0
+            input_fps_avg = _safe_rate(total_input, elapsed)
+            processed_fps_avg = _safe_rate(processed, elapsed)
             print(
-                f"  [{camera_id}] input={total_input}, processed={processed}, "
+                f"  [{camera_id}] input={total_input} ({input_fps_avg:.2f}fps), "
+                f"processed={processed} ({processed_fps_avg:.2f}fps), "
                 f"inference={inferred}, drop={total_drop} ({drop_rate:.2f}%)"
             )
 
+        cumulative_inference = final_snapshot["totals"]["inference"]
+        live_success = final_snapshot["upload_success"]
+        scavenger_success = final_snapshot["scavenger_success"]
+        effective_success = live_success + scavenger_success
+        live_delivery_rate = _safe_rate(live_success * 100.0, cumulative_inference)
+        effective_delivery_rate = _safe_rate(effective_success * 100.0, cumulative_inference)
+
         print(
-            f"  upload_success={final_snapshot['upload_success']}, "
-            f"upload_fail={final_snapshot['upload_fail']}, "
-            f"upload_success_rate={final_snapshot['upload_success_rate']:.2f}%, "
-            f"backlog={final_snapshot['failed_backlog']}"
+            f"  upload(live): success={live_success}, fail={final_snapshot['upload_fail']}, "
+            f"live_delivery_rate={live_delivery_rate:.2f}%"
         )
         print(
             f"  scavenger_success={final_snapshot['scavenger_success']}, "
@@ -451,10 +518,18 @@ def main():
             f"scavenger_expired={final_snapshot['scavenger_expired']}"
         )
         print(
+            f"  delivery(effective): {effective_success}/{cumulative_inference} "
+            f"({effective_delivery_rate:.2f}%), backlog={final_snapshot['failed_backlog']}"
+        )
+        print(
             "  queue_hwm: "
             f"frame={final_snapshot['queue_high_watermark'].get('frame_queue', 0)}, "
             f"crop={final_snapshot['queue_high_watermark'].get('crop_queue', 0)}, "
-            f"upload={final_snapshot['queue_high_watermark'].get('upload_queue', 0)}"
+            f"upload={final_snapshot['queue_high_watermark'].get('upload_queue', 0)} "
+            f"| queue_drop(frame/crop/upload)="
+            f"{final_snapshot['queue_drops'].get('frame_queue', 0)}/"
+            f"{final_snapshot['queue_drops'].get('crop_queue', 0)}/"
+            f"{final_snapshot['queue_drops'].get('upload_queue', 0)}"
         )
         print(
             "  latency(ms) p50/p95: "
@@ -473,6 +548,7 @@ def main():
             f"e2e={format_ms(final_snapshot['latency']['e2e_ms']['p50'])}/"
             f"{format_ms(final_snapshot['latency']['e2e_ms']['p95'])}"
         )
+        print(f"  diagnosis: {_diagnose_bottleneck(final_snapshot, config.UPLOAD_QUEUE_SIZE)}")
 
 
 if __name__ == "__main__":

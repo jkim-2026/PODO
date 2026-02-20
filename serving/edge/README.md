@@ -1,291 +1,188 @@
-# Edge Module
+# Edge Module (Jetson)
 
+PCB 결함 탐지 시스템의 Edge 실행 모듈입니다.  
+역할은 **RTSP 수신 -> PCB 전처리/크롭 -> 추론 -> 업로드/재전송** 입니다.
 
-## 현재 상태
+## 1. 현재 구조 요약
 
-| 구성요소 | 상태 | 비고 |
-|----------|------|------|
-| RTSP 수신 | ✅ 완료 | TCP 모드, 재시도 로직 |
-| 배경 캡처 | ✅ 완료 | 스트립 타일링 방식 |
-| PCB 크롭 | ✅ 완료 | 경계 체크, 크기 검증 |
-| 추론 워커 | ✅ 완료 | TensorRT (FP16) 최적화, 백엔드 전송 |
-
-## 모듈 개요
-
-PCB 결함 탐지 시스템의 **엣지(Jetson) 전처리 파이프라인**.
-
-- **역할**: RTSP 영상 수신 → PCB 감지/크롭 → 추론 Queue 전달
-- **실행 환경**: Jetson (로컬 테스트는 macOS/Linux)
+현재 파이프라인은 아래 구조입니다.
 
 ```
-┌─────────────┐     ┌──────────────┐     ┌─────────────┐     ┌─────────────┐
-│ RTSP 수신   │────→│  전처리      │────→│ 추론 워커   │────→│ 업로드 워커 │
-│ (Thread)    │     │  (Main)      │     │ (Thread)    │     │ (Thread)    │
-└─────────────┘     └──────────────┘     └─────────────┘     └─────────────┘
-       │                   │                    │                   │
-   frame_queue        crop_queue           upload_queue        API / Local
+RTSPReceiver(cam별 thread) -> shared frame_queue
+                           -> main 전처리 루프(단일)
+                           -> shared crop_queue
+                           -> InferenceWorker(단일, 모델 1개)
+                           -> shared upload_queue
+                           -> UploadWorker(단일)
+                           -> 실패 시 storage/failed/*.json
+                           -> ScavengerWorker(단일, 백그라운드 재전송)
 ```
 
-## 기술 스택
+핵심 포인트:
+- 수신은 camera별 병렬
+- 전처리/추론/업로드는 단일 소비자 구조
+- 모델은 1개만 로드해 메모리 사용량을 제어
+- `camera_id`를 payload에 포함해 채널 구분
 
-- **Python**: >=3.11
-- **OpenCV**: 영상 처리
-- **NumPy**: 수치 연산
-- **Threading/Queue**: 비동기 파이프라인
+## 2. 디렉터리 구조
 
-## 프로젝트 구조
-
+```text
+serving/edge/
+├── main.py                # 파이프라인 엔트리
+├── config.py              # 실행/큐/임계값 설정
+├── preprocessor.py        # PCB 전처리
+├── rtsp_receiver.py       # RTSP 수신 스레드
+├── inference_worker.py    # 추론 워커 (YOLO/TensorRT)
+├── upload_worker.py       # 실시간 업로드 워커
+├── scavenger_worker.py    # 실패 파일 재전송 워커
+├── metrics.py             # M-1 성능 지표 수집
+├── capture_background.py  # 배경 이미지 생성 도구
+├── background.png
+└── storage/
+    └── failed/
+        └── expired/       # TTL/재시도 초과 파일
 ```
-├── main.py               # 메인 루프 (워커 스케줄링)
-├── config.py             # 중앙 집중형 설정 파일 (ROI, 임계값 등)
-├── preprocessor.py       # 전처리 파이프라인 클래스
-├── inference_worker.py   # TensorRT 추론 워커
-├── upload_worker.py      # 비동기 업로드 및 로컬 Failover 워커
-├── rtsp_receiver.py      # RTSP 수신 스레드
-├── capture_background.py # 배경 이미지 캡처 도구
-├── background.png        # 생성된 배경 이미지
-├── storage/              # 전송 실패 데이터 백업용 폴더
-├── pyproject.toml
-├── uv.lock
-└── README.md             # 이 파일
-```
 
-## 개발 환경 설정
+## 3. 실행 방법
+
+### 3.1 환경 준비
 
 ```bash
 cd serving/edge
 uv sync --active
 ```
 
-## 실행 방법
+### 3.2 기본 실행 (1대)
 
 ```bash
-cd serving/edge
 uv run python main.py
 ```
 
-### CLI 옵션
+### 3.3 멀티 카메라 실행
+
+```bash
+uv run python main.py -n 3
+```
+
+동작 규칙:
+- `-n > 1`이고 입력이 RTSP URL이면 `--input` 뒤에 `_1, _2, ...` 자동 확장
+- 예: `rtsp://IP:8554/pcb_stream` -> `pcb_stream_1`, `pcb_stream_2`, `pcb_stream_3`
+
+### 3.4 파일 기반 부하 테스트
+
+```bash
+uv run python main.py -i "/path/test.mp4" -n 5
+```
+
+동작 규칙:
+- 입력이 파일(`.mp4/.avi/.mkv`)이면 같은 파일을 n개 카메라처럼 반복 수신
+
+### 3.5 서버 다운/오프라인 테스트
+
+```bash
+uv run python main.py -a "http://127.0.0.1:9999/detect/" --no-session -n 3
+```
+
+## 4. CLI 옵션
 
 | 옵션 | 설명 | 기본값 |
-|------|------|--------|
-| `--input`, `-i` | RTSP URL 또는 비디오 파일 경로 | `rtsp://3.36.185.146:8554/pcb_stream` |
-| `--loop`, `-l` | 비디오 파일 반복 재생 | False |
-| `--debug`, `-d` | 디버그 모드 (크롭 이미지 저장) | False |
-| `--debug-dir` | 디버그 크롭 저장 디렉토리 | `debug_crops` |
-| `--max-crops` | 최대 크롭 개수 (0=무제한) | 0 |
+|---|---|---|
+| `--input`, `-i` | RTSP URL 또는 비디오 파일 경로 | `config.RTSP_URL` |
+| `--api-url`, `-a` | 업로드 API 주소 | `config.API_URL` |
+| `--model`, `-m` | YOLO 모델 경로 (`.pt`/`.engine`) | `config.MODEL_PATH` |
+| `--loop`, `-l` | 파일 입력 반복 재생 | `False` |
+| `--debug`, `-d` | 크롭 이미지 저장 | `False` |
+| `--session-url` | 세션 API 주소 | 하드코딩 기본값 |
+| `--no-session` | 세션 API 비활성화 | `False` |
+| `--no-scavenger` | 재전송 워커 비활성화 | `False` |
+| `--max-crops` | 최대 크롭 개수 (0=무제한) | `0` |
+| `--num-cameras`, `-n` | 카메라 대수 | `1` |
 
-## 핵심 클래스
+## 5. 핵심 동작
 
-### PCBPreprocessor
+### 5.1 전처리
 
-프레임을 처리하여 PCB를 감지하고 크롭하는 클래스.
+- `PCBPreprocessor`는 상태 머신(`background`/`pcb`) 기반
+- ROI 표준편차와 배경 차분으로 PCB 영역 추출
+- camera별 전처리 인스턴스를 분리해서 상태 오염 방지
 
-**상태 머신:**
-- `background`: 배경 상태 (PCB 없음)
-- `pcb`: PCB 진입 상태
+### 5.2 추론
 
-**히스테리시스 임계값:**
-- `THRESH_LOW = 15`: 이 이하면 background로 전환
-- `THRESH_HIGH = 25`: 이 이상이면 pcb로 전환
+- `InferenceWorker`는 모델 1개 로드
+- `.pt` 입력 시 `.engine` 존재하면 우선 사용
+- 결과 payload에 `camera_id`, `session_id` 포함
+- `image_id`는 **마이크로초+UUID**로 생성해 충돌 방지
 
-**주요 메서드:**
-- `process_frame(frame)`: 프레임 처리 후 크롭된 PCB 반환 (없으면 None)
+### 5.3 업로드/재전송
 
-### InferenceWorker
+- `UploadWorker`: 실시간 업로드 시도
+- 실패 시 `storage/failed/*.json` 저장
+- `ScavengerWorker`: 실패 파일을 백그라운드 재전송
+  - exponential backoff + jitter
+  - max retry / TTL
+  - 초과 시 `storage/failed/expired`로 이동
 
-PCB 결함 탐지를 전담하는 GPU 추론 워커.
+## 6. M-1 성능 지표 (5초 주기 + 종료 요약)
 
-**특징:**
-- **TensorRT 최적화**: Jetson Orin의 성능을 극대화하기 위해 FP16 정밀도로 엔진 변환
-- **비동기 큐 구조**: 추론 결과를 직접 전송하지 않고 `upload_queue`에 푸시하여 추론 병목 제거
-- **리소스 격리**: 모델 초기화 및 엔진 변환을 최우선으로 수행하여 실시간 스트림과의 간섭 최소화
+### 6.1 출력되는 지표
 
-### UploadWorker
+1. 처리량
+- `throughput(total): input/processed/inference`
+- `총 처리량(Aggregate Processed FPS)` (전체 합산)
+- `카메라당 평균 처리 FPS(참고)`
 
-네트워크 전송 및 데이터 보존을 담당하는 워커.
+2. 카메라별 상태
+- `input fps`
+- `processed fps`
+- `drop rate`
 
-**특징:**
-- **비동기 전송**: 네트워크 지연이 전체 시스템(프레임 처리)에 영향을 주지 않도록 분리
-- **로컬 Failover**: API 서버 전송 실패 시 `storage/failed/`에 JSON으로 자동 백업
-- **안정성**: 백엔드 서버 부하 시에도 큐(`upload_queue`)를 통해 데이터 버퍼링 수행
+3. 업로드 전달률
+- `upload(live)` 실시간 업로드 성공/실패
+- `delivery(effective)` = 실시간 + 재전송 성공률
+- `backlog` 실패 파일 잔량
 
-### RTSPReceiver
+4. 큐 지표
+- `queue_hwm` (frame/crop/upload 최고 수위)
+- `queue_drop(frame/crop/upload)` 누적 드롭 수
 
-RTSP 스트림을 수신하는 데몬 스레드.
+5. 지연 지표 (`p50/p95`, ms)
+- `frame_wait`, `preprocess`, `crop_wait`, `inference`
+- `upload_wait`, `upload`, `e2e`
 
-**특징:**
-- TCP 모드 사용 (`OPENCV_FFMPEG_CAPTURE_OPTIONS=rtsp_transport;tcp`)
-- 연속 실패 30회까지 재시도 (RTSP 연결 안정성)
-- Queue가 가득 차면 오래된 프레임 버림 (실시간성 우선)
-- graceful shutdown 지원
+6. 자동 진단
+- `diagnosis`: 병목 의심 구간 요약
 
-## 전처리 로직
+### 6.2 해석 가이드
 
-### 1. PCB 진입 감지
+- `Aggregate Processed FPS`는 카메라 합산 처리량입니다.
+- 카메라별 실시간성 판단은 `processed fps`와 `drop rate`로 확인합니다.
+- 업로드 병목은 보통 아래 신호로 드러납니다.
+  - `upload queue_hwm`이 최대치 근접
+  - `upload_wait p95` 급증
+  - `upload p95` 급증
+  - `delivery(effective)` 저하 또는 backlog 증가
 
-```python
-# 검사 영역 (세로 띠)
-ROI_X1, ROI_X2 = 950, 970
-ROI_Y1, ROI_Y2 = 158, 922
+## 7. 주요 설정 (`config.py`)
 
-# 표준편차로 PCB 존재 여부 판단 (BGR 사용 - 구분력 높음)
-roi = frame[ROI_Y1:ROI_Y2, ROI_X1:ROI_X2]
-std = np.std(roi)  # BGR 그대로 계산
+큐/계측/재전송 관련 주요 파라미터:
 
-# BGR vs Gray 표준편차 비교:
-# - PCB: BGR ~45-47, Gray ~27-30
-# - 배경: BGR ~3, Gray ~3
-# → BGR이 구분력 ~15배, Gray는 ~9배
-```
+- `FRAME_QUEUE_SIZE`, `CROP_QUEUE_SIZE`, `UPLOAD_QUEUE_SIZE`
+- `METRICS_LOG_INTERVAL_SEC`, `METRICS_LATENCY_BUFFER_SIZE`
+- `SCAVENGER_*` (`POLL_INTERVAL`, `BASE_BACKOFF`, `MAX_BACKOFF`, `JITTER`, `MAX_RETRIES`, `TTL`)
 
-### 2. 크롭
+## 8. 현재 한계 (정직한 상태 공유)
 
-```python
-# 배경 빼기로 PCB 영역 추출
-diff = cv2.absdiff(gray, background_gray)
-_, binary = cv2.threshold(diff, 25, 255, cv2.THRESH_BINARY)
+- frame/crop/upload 큐는 아직 shared 구조
+- RTSP는 OpenCV FFMPEG 경로 기준 (HW decode 전환 전)
+- 채널 공정성 스케줄링(P1-1) 미적용
 
-# 조건에 맞는 컨투어 찾기 (크기 + 경계 체크)
-contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-for contour in contours:
-    x, y, w, h = cv2.boundingRect(contour)
-    if validate_size(w, h) and is_fully_in_frame(x, w):
-        return frame[y:y+h, x:x+w]
-```
+즉 현재는 멀티카메라 동작은 가능하지만, 극단 부하/네트워크 불안정 상황에서는 업로드 구간 병목 영향이 큽니다.
 
-### 3. 크기 검증
+## 9. 다음 개선 우선순위
 
-```python
-# PCB 크기 범위 확인
-750 <= h <= 780
-700 <= w <= 1600
-0.8 <= w/h <= 2.0  # 실제 PCB 비율 ~1.9
-```
-
-### 4. 경계 체크
-
-```python
-# PCB가 프레임 안에 완전히 들어왔는지 확인
-margin = 10
-if x < margin or (x + w) > (frame_w - margin):
-    return None  # 아직 가장자리에 걸쳐 있음
-```
-
-## 배경 이미지 생성
-
-### 방법: 스트립 타일링
-
-RTSP 스트림에서 직접 배경을 캡처합니다.
-
-```bash
-uv run python capture_background.py
-```
-
-**동작 원리:**
-1. 가운데 스트립 (x=955~965, 10px 너비) 모니터링
-2. 표준편차 < 15 (PCB 없음) 감지
-3. 해당 스트립 캡처 (10px × 1080px)
-4. 가로로 타일링해서 1920×1080 배경 생성
-
-**왜 이 방법?**
-- PCB 사이 간격이 좁아도 가운데만 비면 캡처 가능
-- 전체 프레임이 비는 순간을 기다릴 필요 없음
-- 컨베이어 벨트가 균일하므로 타일링해도 자연스러움
-
-## RTSP 서버 정보
-
-- **URL**: `rtsp://3.36.185.146:8554/pcb_stream`
-- **위치**: Lightsail
-- **해상도**: 1920×1080 @ 30fps
-- **코덱**: H.264
-
-## 백엔드 연동
-
-크롭된 PCB 이미지는 추론 후 백엔드로 전송:
-
-```python
-POST http://3.35.182.98:8080/detect
-{
-  "timestamp": "2026-01-18T15:01:00",
-  "image_id": "PCB_002",
-  "image": "base64_encoded_string",  # 불량일 때만
-  "detections": [...]
-}
-```
-
-## 테스트
-
-### 배경 캡처
-
-```bash
-uv run python capture_background.py
-```
-
-### 로컬 테스트 (mp4 파일)
-
-```bash
-uv run python main.py --input ../rtsp/PCB_Conveyor_30fps.mp4 --loop
-```
-
-### RTSP 테스트
-
-```bash
-uv run python main.py
-```
-
-### 디버그 모드 (크롭 이미지 저장)
-
-```bash
-uv run python main.py --debug --max-crops 5
-```
-
-## 주의사항
-
-- **Queue 크기**: frame_queue=2, crop_queue=10
-- **프레임 드롭**: Queue 가득 차면 오래된 프레임 버림 (실시간성 우선)
-- **상태 초기화**: PCB가 나가면 (background 전환 시) crop_done 리셋
-- **배경 이미지**: 반드시 실제 스트림에서 캡처해야 함 (생성 X)
-- **RTSP 연결**: TCP 모드 필수, 연결 실패 시 자동 재시도
-
-## 트러블슈팅
-
-### RTSP 프레임 0개
-
-1. TCP 모드 확인: `os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp"`
-2. 연결 재시도 로직 확인
-3. VLC로 스트림 테스트: `vlc rtsp://3.36.185.146:8554/pcb_stream`
-
-### 크롭이 잘림
-
-1. 배경 이미지에 PCB가 포함되어 있는지 확인
-2. `capture_background.py`로 새 배경 캡처
-3. 경계 체크 마진 확인 (현재 10px)
-
-### 크롭이 안 됨
-
-1. 크기 검증 범위 확인 (w: 700-1600, h: 750-780, ratio: 0.8-2.0)
-2. 디버그 로그 추가해서 bbox 좌표 확인
-3. 배경 빼기 임계값 조정 (현재 25)
-
-### 엔진 빌드 중 멈춤/지연
-
-1. **원인**: TensorRT 엔진(.engine) 생성은 CPU/GPU를 풀가동하며 10~20분 소요됨
-2. **해결**: 첫 실행 시 로그가 멈춘 것처럼 보여도 완료될 때까지 대기
-3. **최적화**: 현재 FP16(`half=True`) 옵션이 적용되어 있어 빌드 후 성능 극대화
-
-### 엔진 빌드 중 RTSP 에러 (Bad CSeq 등)
-
-1. **원인**: 엔진 빌드 시 리소스 부족으로 네트워크 패킷 처리가 늦어짐
-2. **해결**: `main.py` 수정으로 엔진 초기화를 먼저 수행하도록 개선됨
-## 성능 지표 (FPS) 가이드
-
-로그에 출력되는 **평균 성능 (FPS)**은 모델의 순수 추론 속도가 아닌 **시스템 전체의 처리량**을 의미합니다.
-
-1. **Processing FPS (전처리 FPS)**: 초당 몇 개의 프레임을 수신하여 전처리 로직을 거쳤는가를 나타냅니다. 30 FPS 이상 유지되어야 실시간 영상을 밀림 없이 처리하고 있음을 의미합니다.
-2. **Inference FPS (추론 FPS)**: 실제 PCB가 감지되었을 때 GPU가 구동되는 속도입니다. 시스템 부하를 줄이기 위해 PCB가 포착된 시점에만 동작합니다.
-
-## 코드 컨벤션
-
-- 모든 상수는 `config.py`에서 관리
-- 에지 전용 주석은 한국어로 작성
-- 커밋 메시지: `[Edge] 타입: 제목`
+1. P1-1 카메라별 frame queue 분리 + 공정 스케줄링
+2. P1-E1 GStreamer + `nvv4l2decoder` HW decode
+3. P1-2 큐 스케일링/경보 고도화
+4. P1-4 RTSP 재연결 강화
+5. P1-E2 GPU 전처리 POC
+6. M-2 Before/After 벤치마크 리포트
