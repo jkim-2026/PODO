@@ -267,11 +267,10 @@ def prepare_model_for_export(model: nn.Module) -> None:
             # Only set export flag
             module.use_fb_fake_quant = True
             
-            # Check if amax exists; if not, assume it wasn't calibrated/quantized and keep as FP32
-            if not hasattr(module, '_amax') or module._amax is None:
-                 # Warning only, do not force
-                 # print(f"⚠️  Warning: {name}._amax is None. Keeping as FP32 (Skipping Quantization).")
-                 continue
+            # [FIX] Ensure _amax is a scalar or consistent shape for ONNX export
+            # Some versions of Opset 13 fail if amax is a 0-d tensor with an explicit dimension mismatch
+            if module._amax.numel() == 1:
+                 module._amax.data = module._amax.data.reshape([])
             
             # Only set export flag if valid amax exists
             module.use_fb_fake_quant = True

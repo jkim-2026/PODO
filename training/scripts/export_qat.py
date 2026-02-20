@@ -34,7 +34,7 @@ def main():
         from pytorch_quantization import nn as quant_nn
     except ImportError:
         print("❌ pytorch-quantization not found.")
-        return
+        sys.exit(1)
 
     # 1. Initialize QAT Context
     print("🔧 Initializing Quantization Modules...")
@@ -206,6 +206,8 @@ def main():
 
     except Exception as e:
         print(f"❌ Export failed: {e}")
+        import sys
+        sys.exit(1)
     finally:
         quant_nn.TensorQuantizer.use_fb_fake_quant = False
 

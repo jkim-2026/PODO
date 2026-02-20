@@ -1,7 +1,7 @@
 # PCB Defect Detection Configuration V2
 
 # Experiment
-exp_name: "v8n_1280"
+exp_name: "v11m_640"
 wandb_project: "" # Leave empty to disable
 seed: 42 # Random seed for reproducibility
 
@@ -9,7 +9,7 @@ seed: 42 # Random seed for reproducibility
 # Available Options: corresponds to python filename in src/datasets/
 dataset_module: "dataset"       # ['dataset', 'dataset_aug']
 # Available Options: corresponds to python filename in src/models/
-model_module: "yolov8n"          # ['yolov8n', 'yolov8s', 'yolov8m']
+model_module: "yolov11m"          # ['yolov8n', 'yolov8s', 'yolov8m']
 
 # Model Settings
 # model_module decides which weights to load internally (e.g. pretrained_weights/yolov8s.pt).
@@ -29,7 +29,7 @@ val_size: 0.2      # 20% for Validation (Train=70%)
 # Training Control
 epochs: 200
 batch_size: 16
-img_size: 1280      # Input image size (e.g. 640)
+img_size: 640      # Input image size (e.g. 640)
 patience: 30       # Early stopping patience
 save: True
 save_period: -1    # Save checkpoint every N epochs (-1 disables)

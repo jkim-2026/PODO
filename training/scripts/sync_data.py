@@ -23,8 +23,8 @@ except ImportError:
     class Settings:
         AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
         AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
-        AWS_REGION = os.getenv("AWS_REGION", "ap-northeast-2")
-        S3_BUCKET_NAME = "final-project-podo" # Replace with actual if needed
+        AWS_REGION = os.getenv("AWS_REGION", "ap-southeast-2")
+        S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME", "pcb-data-storage")
         DATASET_DIR = os.path.join(project_root, "PCB_DATASET")
     settings = Settings()
 
@@ -86,49 +86,149 @@ def sync_refined_data(local_dataset_msg_dir: str):
     print(f"✅ Downloaded {len(new_files)} new images.")
     return new_files
 
-def update_split_files(dataset_dir, new_stems):
+def load_existing_splits(dataset_dir):
     """
-    Appends new files to train.txt and val.txt (9:1 split).
+    Reads train.txt and val.txt to identify already registered images.
+    Returns: set of absolute paths (or stems if consistent)
     """
-    if not new_stems:
-        print("ℹ️  No new files to add.")
-        return
+    existing_images = set()
+    for split in ["train.txt", "val.txt"]:
+        path = Path(dataset_dir) / split
+        if path.exists():
+            with open(path, "r") as f:
+                for line in f:
+                    # Store as absolute path for reliable comparison
+                    existing_images.add(line.strip())
+    return existing_images
 
-    random.shuffle(new_stems)
+def create_transient_datasets(dataset_dir, new_stems):
+    """
+    Creates temporary dataset files for retraining:
+    - train_retrain.txt = train.txt + new_train (90%)
+    - val_retrain.txt = val.txt + new_val (10%)
+    - data_retrain.yaml = Points to these new files
+    """
+    # 1. Load Original Splits
+    train_orig = []
+    val_orig = []
     
-    # 9:1 Split
-    split_idx = int(len(new_stems) * 0.9)
-    train_stems = new_stems[:split_idx]
-    val_stems = new_stems[split_idx:]
-    
-    print(f"📊 Adding {len(train_stems)} to Train, {len(val_stems)} to Val.")
+    if (Path(dataset_dir) / "train.txt").exists():
+        with open(Path(dataset_dir) / "train.txt", "r") as f:
+            train_orig = [line.strip() for line in f if line.strip()]
+            
+    if (Path(dataset_dir) / "val.txt").exists():
+        with open(Path(dataset_dir) / "val.txt", "r") as f:
+            val_orig = [line.strip() for line in f if line.strip()]
 
-    # Helper to append lines
-    def append_to_file(filename, stems):
-        path = Path(dataset_dir) / filename
-        with open(path, "a") as f:
-            for stem in stems:
-                # Assuming images are in 'images/' relative to dataset root or absolute
-                # YOLO usually expects relative path from data.yaml location or absolute
-                # Let's use absolute path for safety
-                img_path = (Path(dataset_dir) / "images" / (stem + ".jpg")).absolute()
-                f.write(f"{img_path}\n")
+    print(f"📉 Base Dataset: {len(train_orig)} Train, {len(val_orig)} Val")
 
-    if train_stems:
-        append_to_file("train.txt", train_stems)
-    if val_stems:
-        append_to_file("val.txt", val_stems)
+    # 2. Split New Data (9:1)
+    if new_stems:
+        random.shuffle(new_stems)
+        split_idx = int(len(new_stems) * 0.9)
+        new_train_stems = new_stems[:split_idx]
+        new_val_stems = new_stems[split_idx:]
         
-    print("✅ Split files updated.")
+        print(f"🆕 New Data: {len(new_train_stems)} Train, {len(new_val_stems)} Val")
+    else:
+        new_train_stems = []
+        new_val_stems = []
+        print("ℹ️  No new data found. Using base dataset only.")
+
+    # Helper to convert stems to paths
+    def stems_to_paths(stems):
+        return [str((Path(dataset_dir) / "images" / (s + ".jpg")).absolute()) for s in stems]
+
+    new_train_paths = stems_to_paths(new_train_stems)
+    new_val_paths = stems_to_paths(new_val_stems)
+
+    # 3. Combine
+    train_final = train_orig + new_train_paths
+    val_final = val_orig + new_val_paths
+
+    # 4. Write Transient Files
+    retrain_train_path = Path(dataset_dir) / "train_retrain.txt"
+    retrain_val_path = Path(dataset_dir) / "val_retrain.txt"
+
+    with open(retrain_train_path, "w") as f:
+        f.write("\n".join(train_final))
+    
+    with open(retrain_val_path, "w") as f:
+        f.write("\n".join(val_final))
+
+    print(f"✅ Created Transient Splits: {len(train_final)} Train, {len(val_final)} Val")
+    print(f"   -> {retrain_train_path}")
+    print(f"   -> {retrain_val_path}")
+
+    # 5. Create Transient Data YAML
+    # We need to read the original data.yaml to get class names
+    orig_yaml_path = Path(dataset_dir) / "data.yaml"
+    names = {}
+    nc = 0
+    
+    if orig_yaml_path.exists():
+        with open(orig_yaml_path, 'r') as f:
+            data_config = yaml.safe_load(f)
+            names = data_config.get('names', {})
+            nc = data_config.get('nc', 0)
+    else:
+        # Fallback: PCB defect class names (from config.settings CLASS_ID_MAP)
+        names = {
+            0: "missing_hole",
+            1: "mouse_bite",
+            2: "open_circuit",
+            3: "short",
+            4: "spur",
+            5: "spurious_copper"
+        }
+        nc = 6
+        print("⚠️  data.yaml not found. Using default PCB defect class names.")
+    
+    retrain_yaml_content = {
+        'path': str(dataset_dir),
+        'train': str(retrain_train_path.absolute()),
+        'val': str(retrain_val_path.absolute()),
+        'nc': nc,
+        'names': names
+    }
+
+    retrain_yaml_path = Path(dataset_dir) / "data_retrain.yaml"
+    with open(retrain_yaml_path, 'w') as f:
+        yaml.dump(retrain_yaml_content, f)
+        
+    print(f"📄 Created Transient Config: {retrain_yaml_path}")
+    return str(retrain_yaml_path)
 
 def main():
     dataset_dir = settings.DATASET_DIR
     
-    # 1. Sync
-    new_stems = sync_refined_data(dataset_dir)
+    # 1. Sync (Downloads files, returns all new stems found on disk that aren't in base)
+    # Modified Logic: existing 'sync_refined_data' downloads files.
+    # We need to identify which of these are actually "new" to the dataset.
     
-    # 2. Update Splits
-    update_split_files(dataset_dir, new_stems)
+    # Run sync first to ensure files are local
+    downloaded_stems = sync_refined_data(dataset_dir) # This downloads everything new from S3
+    
+    # Now SCAN disk to find everything available
+    images_dir = Path(dataset_dir) / "images"
+    all_stems = {f.stem for f in images_dir.rglob("*.jpg")}
+    
+    # Load what we already have in train.txt/val.txt
+    # We need to extract stems from the paths in txt files
+    existing_paths = load_existing_splits(dataset_dir)
+    existing_stems = {Path(p).stem for p in existing_paths}
+    
+    # Identify truly new stems (On disk BUT NOT in existing splits)
+    new_stems = list(all_stems)
+    
+    print(f"🔎 Scanning: Found {len(all_stems)} images on disk, {len(existing_stems)} already in splits.")
+    print(f"✨ Identified {len(new_stems)} unassigned images.")
+
+    # 2. Create Transient Files
+    yaml_path = create_transient_datasets(dataset_dir, new_stems)
+    
+    # Output the yaml path for Airflow to capture (via XCom or stdout lines)
+    print(f"::set-output name=data_yaml::{yaml_path}")
 
 if __name__ == "__main__":
     main()

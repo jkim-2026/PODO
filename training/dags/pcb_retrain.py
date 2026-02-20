@@ -1,7 +1,6 @@
 from airflow import DAG
-from airflow.operators.bash import BashOperator
-from airflow.sensors.python import PythonSensor
-from airflow.utils.dates import days_ago
+from airflow.providers.standard.operators.bash import BashOperator
+import pendulum
 from datetime import timedelta
 import os
 
@@ -9,6 +8,7 @@ import os
 PROJECT_ROOT = "/workspace/final_project/training"
 SCRIPTS_DIR = f"{PROJECT_ROOT}/scripts"
 MODEL_CONFIG = f"{PROJECT_ROOT}/configs/config_qat.yaml"
+PYTHON_BIN = "/workspace/final_project/training/.venv/bin/python"  # Project venv (has boto3/ultralytics/mlflow)
 
 default_args = {
     'owner': 'podo_team',
@@ -23,46 +23,50 @@ with DAG(
     'pcb_retrain_pipeline',
     default_args=default_args,
     description='PCB Defect Detection Retraining Pipeline (Sync -> Train/QAT -> Export)',
-    schedule_interval='0 18 * * 0',  # Every Sunday at 18:00 UTC (Mon 03:00 KST)
-    start_date=days_ago(1),
+    schedule='0 18 * * 0',  # Every Sunday at 18:00 UTC (Mon 03:00 KST)
+    start_date=pendulum.today('UTC').add(days=-1),
     tags=['podo', 'qat', 'mlops'],
     catchup=False
 ) as dag:
 
-    # 1. Sync Data from S3
+
+    # 1. Sync Data (Transient Mode)
+    # Creates 'data_retrain.yaml' in dataset directory
     t1_sync = BashOperator(
         task_id='sync_data_from_s3',
-        bash_command=f'python {SCRIPTS_DIR}/sync_data.py',
+        bash_command=f'{PYTHON_BIN} {SCRIPTS_DIR}/sync_data.py',
         cwd=PROJECT_ROOT
     )
 
-    # 2. Train QAT Model (Includes Recalibration)
-    # Using 'train_qat.py' which we modified to be robust
+    # 2. Train QAT Model
+    # Uses {{ ts_nodash }} to generate unique experiment name: e.g. pcb_retrain_20240101000000
+    # Inputs: data_retrain.yaml (from t1)
+    # Uses run_id for unique experiment name (robust across Airflow versions)
+    run_id = "{{ run_id }}"
+    
     t2_train = BashOperator(
         task_id='train_qat_model',
-        bash_command=f'python {SCRIPTS_DIR}/train_qat.py --config {MODEL_CONFIG}',
+        bash_command=f'{PYTHON_BIN} {SCRIPTS_DIR}/train_qat.py --config {MODEL_CONFIG} --data {PROJECT_ROOT}/PCB_DATASET/data_retrain.yaml --name {run_id}',
         cwd=PROJECT_ROOT
     )
 
     # 3. Export to ONNX
-    # We assume training saves to runs/qat/default/weights/best.pt (or similar)
-    # We need to dynamically find the latest 'best.pt' or 'best_qat_fallback.pt'
-    # For simplicity in this DAG, we'll try to target the expected path.
-    # A better approach would be passing the run ID, but here we assume 'latest' logic in export script or consistent naming.
-    # Let's assume train_qat.py logs the final path. OR we use a fixed path structure for automation.
-    
-    # We will use a wrapper command to find the latest run and export it.
     export_cmd = f"""
-    LATEST_RUN=$(ls -td {PROJECT_ROOT}/runs/qat/*/ | head -1)
-    BEST_PT="${{LATEST_RUN}}weights/best.pt"
-    # Check if fallback exists
-    if [ -f "${{LATEST_RUN}}weights/best_qat_fallback.pt" ]; then
-        BEST_PT="${{LATEST_RUN}}weights/best_qat_fallback.pt"
+    RUN_DIR="{PROJECT_ROOT}/runs/qat/{run_id}"
+    BEST_PT="${{RUN_DIR}}/weights/best.pt"
+    # Check for hybrid first (recalibrated)
+    if [ -f "${{RUN_DIR}}/weights/best_hybrid.pt" ]; then
+        BEST_PT="${{RUN_DIR}}/weights/best_hybrid.pt"
+    elif [ -f "${{RUN_DIR}}/weights/best_qat_fallback.pt" ]; then
+        BEST_PT="${{RUN_DIR}}/weights/best_qat_fallback.pt"
     fi
     
+    ONNX_OUTPUT="${{RUN_DIR}}/weights/best.onnx"
+    
     echo "Exporting ${{BEST_PT}}..."
-    python {SCRIPTS_DIR}/export_qat.py --weights "${{BEST_PT}}" --base-weights {PROJECT_ROOT}/yolo11n.pt --full-int8 --output "${{LATEST_RUN}}weights/best.onnx"
+    {PYTHON_BIN} {SCRIPTS_DIR}/export_qat.py --weights "${{BEST_PT}}" --base-weights {PROJECT_ROOT}/runs/yolov11m_640/weights/yolov11m_640.pt --output "${{ONNX_OUTPUT}}"
     """
+
 
     t3_export = BashOperator(
         task_id='export_onnx',
@@ -70,14 +74,14 @@ with DAG(
         cwd=PROJECT_ROOT
     )
     
-    # 4. Register to MLflow (and update S3 latest.json)
-    # We can create a small script for this or inline it.
-    # Let's assume we have a script 'register_model.py'
+    # 4. Register to MLflow (Metadata Only)
+    # Since we are not deploying to edge, we just register the artifact/model in MLflow for record.
+    # We pass the ONNX path.
     register_cmd = f"""
-    LATEST_RUN=$(ls -td {PROJECT_ROOT}/runs/qat/*/ | head -1)
-    ONNX_PATH="${{LATEST_RUN}}weights/best.onnx"
+    RUN_DIR="{PROJECT_ROOT}/runs/qat/{run_id}"
+    ONNX_PATH="${{RUN_DIR}}/weights/best.onnx"
     
-    python {SCRIPTS_DIR}/register_model.py --model-path "${{ONNX_PATH}}" --tags "stage=staging"
+    {PYTHON_BIN} {SCRIPTS_DIR}/register_model.py --model-path "${{ONNX_PATH}}" --tags "run_id={run_id},status=retrained"
     """
     
     t4_register = BashOperator(
