@@ -217,7 +217,9 @@ uv run python main.py -n 3 --no-hw-decode
 ### 10.1 시나리오 수정
 
 - 파일: `serving/edge/benchmarks/scenarios.sample.json`
-- `${INPUT_FILE}`, `${API_URL}`, `${SESSION_URL}` 값을 실행 시 `--var`로 주입
+- 기본 시나리오는 `config.py` 값을 그대로 사용
+  - 입력 RTSP: `RTSP_URL`
+  - 백엔드 API: `API_URL`
 
 ### 10.2 실행
 
@@ -225,11 +227,10 @@ uv run python main.py -n 3 --no-hw-decode
 cd serving/edge
 python3 benchmarks/benchmark_runner.py \
   --runner "python3" \
-  --scenario-file benchmarks/scenarios.sample.json \
-  --var INPUT_FILE=/home/ubuntu/rtsp/test.mp4 \
-  --var API_URL=http://<BACKEND_IP>:8080/detect/ \
-  --var SESSION_URL=http://<BACKEND_IP>:8080/sessions/
+  --scenario-file benchmarks/scenarios.sample.json
 ```
+
+필요 시에만 `--var KEY=VALUE`로 시나리오 변수 치환을 추가합니다.
 
 ### 10.3 결과 확인
 
