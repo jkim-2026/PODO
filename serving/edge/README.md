@@ -66,6 +66,7 @@ uv run python main.py -n 3
 
 동작 규칙:
 - `-n > 1`이고 입력이 RTSP URL이면 `--input` 뒤에 `_1, _2, ...` 자동 확장
+- `-n 1`을 명시해 실행해도 RTSP URL은 `_1`로 정규화
 - 예: `rtsp://IP:8554/pcb_stream` -> `pcb_stream_1`, `pcb_stream_2`, `pcb_stream_3`
 
 ### 3.4 파일 기반 부하 테스트

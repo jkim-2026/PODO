@@ -7,6 +7,7 @@ RTSP 영상을 수신하고, PCB를 감지/크롭하여 추론 및 업로드 수
 import argparse
 import os
 import queue
+import re
 import signal
 import sys
 import time
@@ -38,6 +39,18 @@ def _safe_rate(numerator: float, denominator: float) -> float:
 
 def _clamp(value: int, minimum: int, maximum: int) -> int:
     return max(minimum, min(maximum, value))
+
+
+def _expand_channel_sources(base_source: str, num_cameras: int) -> list[str]:
+    """
+    base_source를 channel suffix 규칙(_1, _2, ...)으로 확장한다.
+    예: rtsp://IP:8554/pcb_stream -> rtsp://IP:8554/pcb_stream_1 ...
+    """
+    head, has_query, query = base_source.partition("?")
+    # 이미 _숫자 suffix가 있으면 base로 정규화 후 재생성
+    head = re.sub(r"_\d+$", "", head)
+    suffix = f"?{query}" if has_query else ""
+    return [f"{head}_{i+1}{suffix}" for i in range(num_cameras)]
 
 
 def _compute_queue_sizes(num_cameras: int):
@@ -435,18 +448,25 @@ def main():
     args = parser.parse_args()
 
     # 입력 소스 처리
-    if args.num_cameras > 1:
-        # 단일 주소가 들어오면 자동으로 _1, _2... 를 붙여서 확장
-        base_url = args.input
-        # 확장자가 있는 파일이 아닌 경우에만 숫자를 붙임
-        if not any(base_url.lower().endswith(ext) for ext in ['.mp4', '.avi', '.mkv']):
-            input_sources = [f"{base_url}_{i+1}" for i in range(args.num_cameras)]
-        else:
-            # 파일인 경우 동일 파일을 n번 수신 (테스트용)
-            input_sources = [base_url] * args.num_cameras
+    raw_sources = [s.strip() for s in args.input.split(",") if s.strip()]
+    num_cameras_flag_used = ("-n" in sys.argv) or ("--num-cameras" in sys.argv)
+
+    if len(raw_sources) > 1:
+        # 쉼표로 여러 소스를 직접 지정한 경우 그대로 사용
+        input_sources = raw_sources
     else:
-        # 기존처럼 쉼표로 구분된 입력을 리스트로 변환
-        input_sources = [s.strip() for s in args.input.split(',')]
+        base_url = raw_sources[0] if raw_sources else args.input.strip()
+        is_video_file = any(base_url.lower().endswith(ext) for ext in [".mp4", ".avi", ".mkv"])
+
+        if is_video_file:
+            # 파일인 경우 동일 파일을 n번 수신 (테스트용)
+            input_sources = [base_url] * args.num_cameras if args.num_cameras > 1 else [base_url]
+        elif args.num_cameras > 1 or (args.num_cameras == 1 and num_cameras_flag_used):
+            # -n 옵션 사용 시 1대도 _1 suffix로 정규화
+            input_sources = _expand_channel_sources(base_url, args.num_cameras)
+        else:
+            # 기존 단일 URL 동작 유지
+            input_sources = [base_url]
 
     # 동적 설정 업데이트 (CLI 인자 우선)
     config.API_URL = args.api_url
