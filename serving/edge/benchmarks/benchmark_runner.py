@@ -163,7 +163,8 @@ def _load_scenarios(path: Path, variables: Dict[str, str], only: List[str]) -> L
     if not path.exists():
         raise FileNotFoundError(f"Scenario file not found: {path}")
 
-    raw = json.loads(path.read_text(encoding="utf-8"))
+    # Accept UTF-8 files with or without BOM.
+    raw = json.loads(path.read_text(encoding="utf-8-sig"))
     if not isinstance(raw, list):
         raise ValueError("Scenario file must be a JSON list")
 
