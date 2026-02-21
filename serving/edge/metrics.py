@@ -53,6 +53,7 @@ class EdgeMetrics:
 
         # Queue high-water marks
         self.queue_high_watermark = defaultdict(int)
+        self.queue_current_depth = defaultdict(int)
 
         # Latency buckets (ms)
         self.latencies = {
@@ -115,6 +116,7 @@ class EdgeMetrics:
 
     def update_queue_depth(self, queue_name: str, depth: int):
         with self._lock:
+            self.queue_current_depth[queue_name] = depth
             if depth > self.queue_high_watermark[queue_name]:
                 self.queue_high_watermark[queue_name] = depth
 
@@ -143,6 +145,7 @@ class EdgeMetrics:
                 "crops": dict(self.crops),
                 "inference_count": dict(self.inference_count),
                 "queue_drops": dict(self.queue_drops),
+                "queue_current_depth": dict(self.queue_current_depth),
                 "queue_high_watermark": dict(self.queue_high_watermark),
                 "upload_success": self.upload_success,
                 "upload_fail": self.upload_fail,
@@ -176,4 +179,3 @@ def format_ms(value: Optional[float]) -> str:
     if value is None:
         return "-"
     return f"{value:.1f}"
-

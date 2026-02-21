@@ -36,6 +36,103 @@ def _safe_rate(numerator: float, denominator: float) -> float:
     return numerator / denominator
 
 
+def _clamp(value: int, minimum: int, maximum: int) -> int:
+    return max(minimum, min(maximum, value))
+
+
+def _compute_queue_sizes(num_cameras: int):
+    """P1-2: 카메라 수 기반 동적 큐 스케일링."""
+    if not config.QUEUE_DYNAMIC_SCALING_ENABLED:
+        return config.FRAME_QUEUE_SIZE, config.CROP_QUEUE_SIZE, config.UPLOAD_QUEUE_SIZE
+
+    frame_target = int(round(config.QUEUE_TARGET_INPUT_FPS * config.FRAME_QUEUE_BUFFER_SEC))
+    frame_size = _clamp(frame_target, config.FRAME_QUEUE_MIN_SIZE, config.FRAME_QUEUE_MAX_SIZE)
+    crop_size = _clamp(
+        config.CROP_QUEUE_SIZE + config.CROP_QUEUE_PER_CAMERA * max(0, num_cameras - 1),
+        config.CROP_QUEUE_SIZE,
+        config.CROP_QUEUE_MAX_SIZE,
+    )
+    upload_size = _clamp(
+        config.UPLOAD_QUEUE_SIZE + config.UPLOAD_QUEUE_PER_CAMERA * max(0, num_cameras - 1),
+        config.UPLOAD_QUEUE_SIZE,
+        config.UPLOAD_QUEUE_MAX_SIZE,
+    )
+    return frame_size, crop_size, upload_size
+
+
+def _next_queue_alert_level(ratio: float, current_level: str) -> str:
+    if ratio >= config.QUEUE_CRIT_RATIO:
+        return "crit"
+    if ratio >= config.QUEUE_WARN_RATIO:
+        return "warn"
+    if ratio <= config.QUEUE_RECOVERY_RATIO:
+        return "ok"
+    return current_level
+
+
+def _build_queue_alerts(snapshot: dict, previous_snapshot: dict, queue_capacities: dict, queue_alert_state: dict):
+    """
+    P1-2: Queue watermark 경보 고도화.
+    - ratio 기반 warn/crit/recovery
+    - hold time 기반 노이즈 억제
+    - interval drop 증가 감지
+    """
+    now = snapshot["ts"]
+    alerts = []
+    current_depths = snapshot.get("queue_current_depth", {})
+    current_drops = snapshot.get("queue_drops", {})
+    previous_drops = previous_snapshot.get("queue_drops", {})
+
+    for queue_name, maxsize in queue_capacities.items():
+        if maxsize <= 0:
+            continue
+
+        depth = current_depths.get(queue_name, 0)
+        ratio = depth / maxsize
+        state = queue_alert_state.setdefault(
+            queue_name,
+            {
+                "level": "ok",
+                "since": now,
+                "last_emitted_level": "ok",
+            },
+        )
+        prev_level = state["level"]
+        next_level = _next_queue_alert_level(ratio, prev_level)
+        if next_level != prev_level:
+            state["level"] = next_level
+            state["since"] = now
+            if next_level == "ok":
+                if prev_level in ("warn", "crit"):
+                    alerts.append(
+                        f"  queue_alert[RECOVERY] {queue_name}: "
+                        f"depth={depth}/{maxsize} ({ratio*100:.1f}%)"
+                    )
+                state["last_emitted_level"] = "ok"
+
+        hold_sec = now - state["since"]
+        if state["level"] == "warn":
+            if hold_sec >= config.QUEUE_WARN_HOLD_SEC and state["last_emitted_level"] != "warn":
+                alerts.append(
+                    f"  queue_alert[WARN] {queue_name}: "
+                    f"depth={depth}/{maxsize} ({ratio*100:.1f}%), hold={hold_sec:.1f}s"
+                )
+                state["last_emitted_level"] = "warn"
+        elif state["level"] == "crit":
+            if hold_sec >= config.QUEUE_CRIT_HOLD_SEC and state["last_emitted_level"] != "crit":
+                alerts.append(
+                    f"  queue_alert[CRIT] {queue_name}: "
+                    f"depth={depth}/{maxsize} ({ratio*100:.1f}%), hold={hold_sec:.1f}s"
+                )
+                state["last_emitted_level"] = "crit"
+
+        drop_delta = current_drops.get(queue_name, 0) - previous_drops.get(queue_name, 0)
+        if drop_delta > 0:
+            alerts.append(f"  queue_alert[DROP] {queue_name}: +{drop_delta} drops (interval)")
+
+    return alerts
+
+
 def _diagnose_bottleneck(snapshot: dict, upload_queue_maxsize: int) -> str:
     upload_wait_p95 = snapshot["latency"]["upload_queue_wait_ms"]["p95"] or 0.0
     upload_p95 = snapshot["latency"]["upload_ms"]["p95"] or 0.0
@@ -74,12 +171,11 @@ def _pull_next_frame_round_robin(
         return None, rr_cursor, 0
 
     n = len(camera_ids)
-    total_depth = 0
+    total_depth = sum(frame_queues[cid].qsize() for cid in camera_ids)
     for offset in range(n):
         idx = (rr_cursor + offset) % n
         camera_id = camera_ids[idx]
         q = frame_queues[camera_id]
-        total_depth += q.qsize()
         try:
             item = q.get_nowait()
             next_cursor = (idx + 1) % n
@@ -90,7 +186,12 @@ def _pull_next_frame_round_robin(
     return None, rr_cursor, total_depth
 
 
-def _print_periodic_metrics(metrics: EdgeMetrics, previous_snapshot: dict) -> dict:
+def _print_periodic_metrics(
+    metrics: EdgeMetrics,
+    previous_snapshot: dict,
+    queue_capacities: dict,
+    queue_alert_state: dict,
+) -> dict:
     snapshot = metrics.snapshot(config.FAILED_DIR)
     interval = max(snapshot["ts"] - previous_snapshot["ts"], 1e-6)
 
@@ -153,6 +254,13 @@ def _print_periodic_metrics(metrics: EdgeMetrics, previous_snapshot: dict) -> di
         f"{snapshot['queue_drops'].get('crop_queue', 0)}/"
         f"{snapshot['queue_drops'].get('upload_queue', 0)}"
     )
+    print(
+        "  queue_depth(now): "
+        f"frame={snapshot['queue_current_depth'].get('frame_queue', 0)}, "
+        f"crop={snapshot['queue_current_depth'].get('crop_queue', 0)}, "
+        f"upload={snapshot['queue_current_depth'].get('upload_queue', 0)}"
+    )
+
     frame_hwm_by_cam = {
         key.replace("frame_queue_", ""): value
         for key, value in snapshot["queue_high_watermark"].items()
@@ -188,7 +296,14 @@ def _print_periodic_metrics(metrics: EdgeMetrics, previous_snapshot: dict) -> di
         f"e2e={format_ms(snapshot['latency']['e2e_ms']['p50'])}/"
         f"{format_ms(snapshot['latency']['e2e_ms']['p95'])}"
     )
-    print(f"  diagnosis: {_diagnose_bottleneck(snapshot, config.UPLOAD_QUEUE_SIZE)}")
+    alerts = _build_queue_alerts(snapshot, previous_snapshot, queue_capacities, queue_alert_state)
+    if alerts:
+        for alert in alerts:
+            print(alert)
+    print(
+        f"  diagnosis: "
+        f"{_diagnose_bottleneck(snapshot, queue_capacities.get('upload_queue', config.UPLOAD_QUEUE_SIZE))}"
+    )
     return snapshot
 
 
@@ -294,6 +409,28 @@ def main():
         default=1,
         help="사용할 카메라 대수 (기본값: 1)"
     )
+    parser.add_argument(
+        "--capture-backend",
+        choices=["auto", "gstreamer", "ffmpeg"],
+        default=config.RTSP_CAPTURE_BACKEND,
+        help=f"RTSP 캡처 백엔드 (기본값: {config.RTSP_CAPTURE_BACKEND})"
+    )
+    parser.add_argument(
+        "--no-hw-decode",
+        action="store_true",
+        help="RTSP HW decode(nvv4l2decoder) 비활성화"
+    )
+    parser.add_argument(
+        "--rtsp-latency-ms",
+        type=int,
+        default=config.RTSP_LATENCY_MS,
+        help=f"GStreamer RTSP latency(ms) (기본값: {config.RTSP_LATENCY_MS})"
+    )
+    parser.add_argument(
+        "--no-rtsp-reconnect",
+        action="store_true",
+        help="RTSP 자동 재연결 비활성화"
+    )
     
     args = parser.parse_args()
 
@@ -314,6 +451,10 @@ def main():
     # 동적 설정 업데이트 (CLI 인자 우선)
     config.API_URL = args.api_url
     config.MODEL_PATH = args.model
+    config.RTSP_CAPTURE_BACKEND = args.capture_backend
+    config.RTSP_HW_DECODE = not args.no_hw_decode
+    config.RTSP_LATENCY_MS = max(0, args.rtsp_latency_ms)
+    config.RTSP_RECONNECT_ENABLED = not args.no_rtsp_reconnect
 
     # 배경 이미지 확인
     if not os.path.exists(config.BACKGROUND_PATH):
@@ -327,10 +468,17 @@ def main():
 
     # Queue 생성
     # P1-1: camera별 frame queue 분리 (공정 스케줄링 기반)
+    # P1-2: camera 수 기반 동적 큐 스케일링
+    frame_queue_size, crop_queue_size, upload_queue_size = _compute_queue_sizes(len(input_sources))
     frame_queues = {}
-    crop_queue = queue.Queue(maxsize=config.CROP_QUEUE_SIZE)
-    upload_queue = queue.Queue(maxsize=config.UPLOAD_QUEUE_SIZE)
+    crop_queue = queue.Queue(maxsize=crop_queue_size)
+    upload_queue = queue.Queue(maxsize=upload_queue_size)
     metrics = EdgeMetrics(latency_buffer_size=config.METRICS_LATENCY_BUFFER_SIZE)
+    queue_capacities = {
+        "frame_queue": frame_queue_size * len(input_sources),
+        "crop_queue": crop_queue_size,
+        "upload_queue": upload_queue_size,
+    }
 
     # 1. 업로드 워커 시작
     upload_worker = UploadWorker(upload_queue, metrics=metrics, api_url=config.API_URL)
@@ -377,8 +525,9 @@ def main():
     receivers = []
     for i, source in enumerate(input_sources):
         camera_id = f"cam_{i+1}"
-        frame_queue = queue.Queue(maxsize=config.FRAME_QUEUE_SIZE)
+        frame_queue = queue.Queue(maxsize=frame_queue_size)
         frame_queues[camera_id] = frame_queue
+        queue_capacities[f"frame_queue_{camera_id}"] = frame_queue_size
         receiver = RTSPReceiver(
             source,
             frame_queue,
@@ -386,6 +535,13 @@ def main():
             loop=args.loop,
             metrics=metrics,
             queue_name=f"frame_queue_{camera_id}",
+            capture_backend=config.RTSP_CAPTURE_BACKEND,
+            use_hw_decode=config.RTSP_HW_DECODE,
+            rtsp_latency_ms=config.RTSP_LATENCY_MS,
+            reconnect_enabled=config.RTSP_RECONNECT_ENABLED,
+            reconnect_base_delay_sec=config.RTSP_RECONNECT_BASE_SEC,
+            reconnect_max_delay_sec=config.RTSP_RECONNECT_MAX_SEC,
+            max_failures=config.RTSP_READ_FAIL_THRESHOLD,
         )
         receiver.start()
         receivers.append(receiver)
@@ -423,6 +579,19 @@ def main():
         print(f"    * [{r.camera_id}] {r.source}")
     print(f"  - API: {config.API_URL}")
     print(f"  - 모델: {config.MODEL_PATH}")
+    print(
+        "  - Queue size: "
+        f"frame_per_cam={frame_queue_size}, "
+        f"crop={crop_queue_size}, upload={upload_queue_size} "
+        f"(dynamic={'on' if config.QUEUE_DYNAMIC_SCALING_ENABLED else 'off'})"
+    )
+    print(
+        "  - RTSP capture: "
+        f"backend={config.RTSP_CAPTURE_BACKEND}, "
+        f"hw_decode={'on' if config.RTSP_HW_DECODE else 'off'}, "
+        f"latency={config.RTSP_LATENCY_MS}ms, "
+        f"reconnect={'on' if config.RTSP_RECONNECT_ENABLED else 'off'}"
+    )
     print(f"  - 세션 ID: {session_id if session_id else '없음'}")
     print(f"  - Scavenger: {'활성화' if scavenger_worker else '비활성화'}")
 
@@ -431,6 +600,7 @@ def main():
     start_time = time.time()
     last_metrics_ts = start_time
     last_metrics_snapshot = metrics.snapshot(config.FAILED_DIR)
+    queue_alert_state = {}
     camera_ids = [r.camera_id for r in receivers]
     rr_cursor = 0
 
@@ -444,7 +614,7 @@ def main():
             )
             metrics.update_queue_depth("frame_queue", total_frame_depth)
             if frame_item is None:
-                all_receivers_stopped = all(not r.is_running() for r in receivers)
+                all_receivers_stopped = all(not r.is_alive() for r in receivers)
                 all_frame_queues_empty = all(frame_queues[cid].empty() for cid in camera_ids)
                 if all_receivers_stopped and all_frame_queues_empty:
                     break
@@ -462,6 +632,10 @@ def main():
                     camera_id, frame = frame_item[0], frame_item[1]
             if frame is None:
                 continue
+
+            camera_queue = frame_queues.get(camera_id)
+            if camera_queue is not None:
+                metrics.update_queue_depth(f"frame_queue_{camera_id}", camera_queue.qsize())
 
             frame_count += 1
             metrics.record_processed(camera_id)
@@ -511,7 +685,12 @@ def main():
 
             now = time.time()
             if now - last_metrics_ts >= config.METRICS_LOG_INTERVAL_SEC:
-                last_metrics_snapshot = _print_periodic_metrics(metrics, last_metrics_snapshot)
+                last_metrics_snapshot = _print_periodic_metrics(
+                    metrics,
+                    last_metrics_snapshot,
+                    queue_capacities,
+                    queue_alert_state,
+                )
                 last_metrics_ts = now
 
     except Exception as e:
@@ -597,6 +776,12 @@ def main():
             f"{final_snapshot['queue_drops'].get('crop_queue', 0)}/"
             f"{final_snapshot['queue_drops'].get('upload_queue', 0)}"
         )
+        print(
+            "  queue_depth(now): "
+            f"frame={final_snapshot['queue_current_depth'].get('frame_queue', 0)}, "
+            f"crop={final_snapshot['queue_current_depth'].get('crop_queue', 0)}, "
+            f"upload={final_snapshot['queue_current_depth'].get('upload_queue', 0)}"
+        )
         frame_hwm_by_cam = {
             key.replace("frame_queue_", ""): value
             for key, value in final_snapshot["queue_high_watermark"].items()
@@ -632,7 +817,10 @@ def main():
             f"e2e={format_ms(final_snapshot['latency']['e2e_ms']['p50'])}/"
             f"{format_ms(final_snapshot['latency']['e2e_ms']['p95'])}"
         )
-        print(f"  diagnosis: {_diagnose_bottleneck(final_snapshot, config.UPLOAD_QUEUE_SIZE)}")
+        print(
+            f"  diagnosis: "
+            f"{_diagnose_bottleneck(final_snapshot, queue_capacities.get('upload_queue', upload_queue_size))}"
+        )
 
 
 if __name__ == "__main__":

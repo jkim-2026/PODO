@@ -1,0 +1,51 @@
+﻿[
+  {
+    "name": "n1_file_offline",
+    "description": "single camera baseline (offline upload)",
+    "duration_sec": 180,
+    "args": [
+      "main.py",
+      "-i",
+      "${INPUT_FILE}",
+      "-n",
+      "1",
+      "--loop",
+      "--no-session",
+      "-a",
+      "http://127.0.0.1:9999/detect/"
+    ]
+  },
+  {
+    "name": "n3_file_offline",
+    "description": "3 camera scale test (offline upload)",
+    "duration_sec": 180,
+    "args": [
+      "main.py",
+      "-i",
+      "${INPUT_FILE}",
+      "-n",
+      "3",
+      "--loop",
+      "--no-session",
+      "-a",
+      "http://127.0.0.1:9999/detect/"
+    ]
+  },
+  {
+    "name": "n3_file_online",
+    "description": "3 camera scale test (online upload)",
+    "duration_sec": 180,
+    "args": [
+      "main.py",
+      "-i",
+      "${INPUT_FILE}",
+      "-n",
+      "3",
+      "--loop",
+      "--session-url",
+      "${SESSION_URL}",
+      "-a",
+      "${API_URL}"
+    ]
+  }
+]

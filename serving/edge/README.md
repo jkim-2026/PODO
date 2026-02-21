@@ -83,6 +83,19 @@ uv run python main.py -i "/path/test.mp4" -n 5
 uv run python main.py -a "http://127.0.0.1:9999/detect/" --no-session -n 3
 ```
 
+### 3.6 RTSP HW decode 강제 사용/해제
+
+```bash
+# auto(기본): GStreamer(HW) 우선, 실패 시 ffmpeg fallback
+uv run python main.py -n 3 --capture-backend auto
+
+# ffmpeg 강제
+uv run python main.py -n 3 --capture-backend ffmpeg
+
+# HW decode 비활성화 (문제 분리용)
+uv run python main.py -n 3 --no-hw-decode
+```
+
 ## 4. CLI 옵션
 
 | 옵션 | 설명 | 기본값 |
@@ -97,6 +110,10 @@ uv run python main.py -a "http://127.0.0.1:9999/detect/" --no-session -n 3
 | `--no-scavenger` | 재전송 워커 비활성화 | `False` |
 | `--max-crops` | 최대 크롭 개수 (0=무제한) | `0` |
 | `--num-cameras`, `-n` | 카메라 대수 | `1` |
+| `--capture-backend` | RTSP 캡처 백엔드(`auto/gstreamer/ffmpeg`) | `auto` |
+| `--no-hw-decode` | `nvv4l2decoder` 경로 비활성화 | `False` |
+| `--rtsp-latency-ms` | GStreamer RTSP 지연 버퍼(ms) | `120` |
+| `--no-rtsp-reconnect` | RTSP 자동 재연결 비활성화 | `False` |
 
 ## 5. 핵심 동작
 
@@ -143,7 +160,9 @@ uv run python main.py -a "http://127.0.0.1:9999/detect/" --no-session -n 3
 
 4. 큐 지표
 - `queue_hwm` (frame/crop/upload 최고 수위)
+- `queue_depth(now)` (현재 점유량)
 - `queue_drop(frame/crop/upload)` 누적 드롭 수
+- `queue_alert[WARN/CRIT/RECOVERY/DROP]` 임계 기반 경보
 
 5. 지연 지표 (`p50/p95`, ms)
 - `frame_wait`, `preprocess`, `crop_wait`, `inference`
@@ -167,20 +186,61 @@ uv run python main.py -a "http://127.0.0.1:9999/detect/" --no-session -n 3
 큐/계측/재전송 관련 주요 파라미터:
 
 - `FRAME_QUEUE_SIZE`, `CROP_QUEUE_SIZE`, `UPLOAD_QUEUE_SIZE`
+- `QUEUE_DYNAMIC_SCALING_ENABLED`
+- `QUEUE_TARGET_INPUT_FPS`, `FRAME_QUEUE_BUFFER_SEC`
+- `FRAME_QUEUE_MIN_SIZE`, `FRAME_QUEUE_MAX_SIZE`
+- `CROP_QUEUE_PER_CAMERA`, `CROP_QUEUE_MAX_SIZE`
+- `UPLOAD_QUEUE_PER_CAMERA`, `UPLOAD_QUEUE_MAX_SIZE`
+- `QUEUE_WARN_RATIO`, `QUEUE_CRIT_RATIO`, `QUEUE_RECOVERY_RATIO`
+- `QUEUE_WARN_HOLD_SEC`, `QUEUE_CRIT_HOLD_SEC`
 - `METRICS_LOG_INTERVAL_SEC`, `METRICS_LATENCY_BUFFER_SIZE`
 - `SCAVENGER_*` (`POLL_INTERVAL`, `BASE_BACKOFF`, `MAX_BACKOFF`, `JITTER`, `MAX_RETRIES`, `TTL`)
 
 ## 8. 현재 한계 (정직한 상태 공유)
 
 - 전처리/추론/업로드는 여전히 단일 소비자 구조
-- RTSP는 OpenCV FFMPEG 경로 기준 (HW decode 전환 전)
+- RTSP HW decode는 H264 기준 GStreamer 파이프라인 우선 적용
+- 카메라별 frame queue는 독립이지만 crop/upload는 공유 queue 구조
 
 즉 현재는 카메라별 frame queue 분리 + 공정 소비는 적용됐지만, 업로드 구간 병목 영향은 여전히 큽니다.
 
 ## 9. 다음 개선 우선순위
 
-1. P1-E1 GStreamer + `nvv4l2decoder` HW decode
-2. P1-2 큐 스케일링/경보 고도화
-3. P1-4 RTSP 재연결 강화
-4. P1-E2 GPU 전처리 POC
-5. M-2 Before/After 벤치마크 리포트
+1. P1-E2 GPU 전처리 POC
+2. M-2 Before/After 벤치마크 리포트
+
+## 10. M-2 벤치마크 실행 가이드
+
+`serving/edge/benchmarks/`에 시나리오 기반 러너가 포함되어 있습니다.
+
+### 10.1 시나리오 수정
+
+- 파일: `serving/edge/benchmarks/scenarios.sample.json`
+- `${INPUT_FILE}`, `${API_URL}`, `${SESSION_URL}` 값을 실행 시 `--var`로 주입
+
+### 10.2 실행
+
+```bash
+cd serving/edge
+python3 benchmarks/benchmark_runner.py \
+  --runner "python3" \
+  --scenario-file benchmarks/scenarios.sample.json \
+  --var INPUT_FILE=/home/ubuntu/rtsp/test.mp4 \
+  --var API_URL=http://<BACKEND_IP>:8080/detect/ \
+  --var SESSION_URL=http://<BACKEND_IP>:8080/sessions/
+```
+
+### 10.3 결과 확인
+
+- 로그: `serving/edge/benchmarks/results/<timestamp>/<scenario>/run.log`
+- 요약(JSON): `serving/edge/benchmarks/results/<timestamp>/summary.json`
+- 요약(CSV): `serving/edge/benchmarks/results/<timestamp>/summary.csv`
+
+### 10.4 Before/After 비교 체크포인트
+
+- `aggregate_processed_fps`
+- `per_camera_avg_fps`
+- `inference_p95_ms`
+- `upload_wait_p95_ms`, `upload_p95_ms`
+- `max_camera_drop_rate`
+- `queue_drop_frame`, `queue_drop_upload`

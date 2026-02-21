@@ -82,6 +82,8 @@ class InferenceWorker(threading.Thread):
             try:
                 # 큐에서 이미지/메타 가져오기
                 item = self.crop_queue.get(timeout=1.0)
+                if self.metrics:
+                    self.metrics.update_queue_depth("crop_queue", self.crop_queue.qsize())
                 camera_id = "unknown"
                 crop = None
                 frame_ts = None

@@ -32,6 +32,8 @@ class UploadWorker(threading.Thread):
             try:
                 # 큐에서 페이로드/메타 가져오기
                 item = self.upload_queue.get(timeout=1.0)
+                if self.metrics:
+                    self.metrics.update_queue_depth("upload_queue", self.upload_queue.qsize())
                 payload = item
                 meta = {}
                 if isinstance(item, dict) and "payload" in item:
