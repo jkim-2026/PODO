@@ -6,7 +6,10 @@ API_URL = "http://3.35.182.98:8080/detect/"
 
 # 모델 경로
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MODEL_PATH = os.path.join(BASE_DIR, "best.pt")
+MODELS_DIR = os.path.join(BASE_DIR, "models")
+MODEL_PATH = os.path.join(MODELS_DIR, "current.engine")
+RELOAD_FLAG_PATH = os.path.join(MODELS_DIR, ".reload_model")
+BUILDING_FLAG_PATH = os.path.join(MODELS_DIR, ".building_engine")
 BACKGROUND_PATH = os.path.join(BASE_DIR, "background.png")
 
 # 전처리 파라미터 (ROI 및 임계값)

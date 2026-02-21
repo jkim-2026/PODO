@@ -65,12 +65,35 @@ class InferenceWorker(threading.Thread):
                     return model
         return YOLO(model_path, task='detect')
 
+    def reload_model(self):
+        """
+        런타임 중 새로운 엔진이 준비되었을 때 모델 객체를 안전하게 교체합니다.
+        """
+        print(f"[InferenceWorker] 🔄 모델 리로드 요청 감지. 교체를 시작합니다...")
+        try:
+            new_model = self._load_model(self.model_path)
+            # 파이썬 가비지 컬렉터가 이전 모델을 정리하도록 의존
+            old_model = self.model
+            self.model = new_model
+            del old_model
+            print(f"[InferenceWorker] ✅ 모델 무중단 교체(Hot-Swap) 완료!")
+        except Exception as e:
+            print(f"[InferenceWorker] ❌ 모델 리로드 실패. 기존 모델을 유지합니다: {e}")
+
     def run(self):
         self.running = True
         print(f"[InferenceWorker] 추론 큐 모니터링 시작...")
         
         while self.running:
             try:
+                # 핫스왑 플래그 검사 (너무 자주 검사하지 않게 큐 대기 시간 이용)
+                if os.path.exists(config.RELOAD_FLAG_PATH):
+                    try:
+                        self.reload_model()
+                        os.remove(config.RELOAD_FLAG_PATH)
+                    except OSError:
+                        pass # 파일 지우기 충돌 무시
+
                 # 큐에서 이미지 가져오기
                 camera_id, crop = self.crop_queue.get(timeout=1.0)
                 
