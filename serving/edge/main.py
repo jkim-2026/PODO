@@ -113,11 +113,30 @@ def main():
         default=0,
         help="최대 크롭 개수 (0=무제한)"
     )
+    parser.add_argument(
+        "--num-cameras", "-n",
+        type=int,
+        default=1,
+        help="사용할 카메라 대수 (기본값: 1)"
+    )
     
     args = parser.parse_args()
 
+    # 입력 소스 처리
+    if args.num_cameras > 1:
+        # 단일 주소가 들어오면 자동으로 _1, _2... 를 붙여서 확장
+        base_url = args.input
+        # 확장자가 있는 파일이 아닌 경우에만 숫자를 붙임
+        if not any(base_url.lower().endswith(ext) for ext in ['.mp4', '.avi', '.mkv']):
+            input_sources = [f"{base_url}_{i+1}" for i in range(args.num_cameras)]
+        else:
+            # 파일인 경우 동일 파일을 n번 수신 (테스트용)
+            input_sources = [base_url] * args.num_cameras
+    else:
+        # 기존처럼 쉼표로 구분된 입력을 리스트로 변환
+        input_sources = [s.strip() for s in args.input.split(',')]
+
     # 동적 설정 업데이트 (CLI 인자 우선)
-    config.RTSP_URL = args.input
     config.API_URL = args.api_url
     config.MODEL_PATH = args.model
 
@@ -132,7 +151,7 @@ def main():
         session_id = start_session(args.session_url)
 
     # Queue 생성
-    frame_queue = queue.Queue(maxsize=config.FRAME_QUEUE_SIZE)
+    frame_queue = queue.Queue(maxsize=config.FRAME_QUEUE_SIZE * len(input_sources))
     crop_queue = queue.Queue(maxsize=config.CROP_QUEUE_SIZE)
     upload_queue = queue.Queue(maxsize=config.UPLOAD_QUEUE_SIZE)
 
@@ -150,18 +169,20 @@ def main():
             end_session(args.session_url, session_id)
         sys.exit(1)
 
-    # 3. RTSP 수신 스레드 시작
-    receiver = RTSPReceiver(config.RTSP_URL, frame_queue, loop=args.loop)
-    receiver.start()
+    # 3. RTSP 수신 스레드 리스트 시작
+    receivers = []
+    for i, source in enumerate(input_sources):
+        camera_id = f"cam_{i+1}"
+        receiver = RTSPReceiver(source, frame_queue, camera_id=camera_id, loop=args.loop)
+        receiver.start()
+        receivers.append(receiver)
 
     # 연결 대기 (최대 10초)
-    print("[Main] RTSP 연결 대기 중...")
-    for _ in range(100):
-        if receiver.is_running():
+    print(f"[Main] {len(receivers)}개 RTSP 연결 대기 중...")
+    start_wait = time.time()
+    while time.time() - start_wait < 10:
+        if all(r.is_running() for r in receivers):
             break
-        if not receiver.is_alive():
-            print("[Main] 수신 스레드 시작 실패")
-            sys.exit(1)
         time.sleep(0.1)
     
     # 4. 추론 워커 가동
@@ -181,7 +202,9 @@ def main():
     signal.signal(signal.SIGTERM, signal_handler)
 
     print("[Main] 파이프라인 가동 시작")
-    print(f"  - 입력: {config.RTSP_URL}")
+    print(f"  - 입력 소스: {len(input_sources)}개")
+    for r in receivers:
+        print(f"    * [{r.camera_id}] {r.source}")
     print(f"  - API: {config.API_URL}")
     print(f"  - 모델: {config.MODEL_PATH}")
     print(f"  - 세션 ID: {session_id if session_id else '없음'}")
@@ -193,9 +216,10 @@ def main():
     try:
         while not shutdown_flag:
             try:
-                frame = frame_queue.get(timeout=1.0)
+                # 큐에서 (camera_id, frame) 튜플을 가져옴
+                camera_id, frame = frame_queue.get(timeout=1.0)
             except queue.Empty:
-                if not receiver.is_running():
+                if all(not r.is_running() for r in receivers):
                     break
                 continue
 
@@ -204,14 +228,14 @@ def main():
 
             if cropped is not None:
                 crop_count += 1
-                print(f"[Main] [#{crop_count}] PCB 포착! ({cropped.shape[1]}x{cropped.shape[0]})")
+                print(f"[Main][{camera_id}] [#{crop_count}] PCB 포착! ({cropped.shape[1]}x{cropped.shape[0]})")
 
                 try:
-                    crop_queue.put_nowait(cropped)
+                    crop_queue.put_nowait((camera_id, cropped))
                 except queue.Full:
                     try:
                         crop_queue.get_nowait()
-                        crop_queue.put_nowait(cropped)
+                        crop_queue.put_nowait((camera_id, cropped))
                     except queue.Empty:
                         pass
 
@@ -223,13 +247,17 @@ def main():
 
     except Exception as e:
         print(f"[Main] 실행 중 오류 발생: {e}")
+        import traceback
+        traceback.print_exc()
     finally:
         print("[Main] 리소스 정리 중...")
-        receiver.stop()
+        for r in receivers:
+            r.stop()
         inference_worker.stop()
         upload_worker.stop()
 
-        receiver.join(timeout=2.0)
+        for r in receivers:
+            r.join(timeout=2.0)
         inference_worker.join(timeout=2.0)
         upload_worker.join(timeout=2.0)
 
@@ -244,7 +272,8 @@ def main():
         print(f"  포착된 PCB: {crop_count}")
         print(f"  실행 시간: {elapsed:.1f}초")
         print(f"  평균 성능: {fps:.1f} FPS")
-        print(f"  수신 상태: {receiver.get_stats()}")
+        for r in receivers:
+            print(f"  [{r.camera_id}] 상태: {r.get_stats()}")
         print(f"  세션 ID: {session_id if session_id else '없음'}")
 
 
