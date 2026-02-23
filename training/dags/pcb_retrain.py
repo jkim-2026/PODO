@@ -4,11 +4,11 @@ import pendulum
 from datetime import timedelta
 import os
 
-# Project settings
+# 프로젝트 설정 관리
 PROJECT_ROOT = "/workspace/final_project/training"
 SCRIPTS_DIR = f"{PROJECT_ROOT}/scripts"
 MODEL_CONFIG = f"{PROJECT_ROOT}/configs/config_qat.yaml"
-PYTHON_BIN = "/workspace/final_project/training/.venv/bin/python"  # Project venv (has boto3/ultralytics/mlflow)
+PYTHON_BIN = "/workspace/final_project/training/.venv/bin/python"  # 프로젝트 가상환경 (boto3/ultralytics/mlflow 포함)
 
 default_args = {
     'owner': 'podo_team',
@@ -22,25 +22,25 @@ default_args = {
 with DAG(
     'pcb_retrain_pipeline',
     default_args=default_args,
-    description='PCB Defect Detection Retraining Pipeline (Sync -> Train/QAT -> Export)',
-    schedule='0 18 * * 0',  # Every Sunday at 18:00 UTC (Mon 03:00 KST)
+    description='PCB 결함 탐지 재학습 파이프라인 (S3 동기화 -> FP32 학습 -> QAT 학습 -> ONNX 추출)',
+    schedule='0 18 * * 0',  # 매주 일요일 UTC 18:00 (한국 시간 월요일 03:00)
     start_date=pendulum.today('UTC').add(days=-1),
     tags=['podo', 'qat', 'mlops'],
     catchup=False
 ) as dag:
 
 
-    # 1. Sync Data (Transient Mode)
-    # Creates 'data_retrain.yaml' in dataset directory
+    # 1. 데이터 동기화 (임시 저장소 사용)
+    # dataset 디렉토리에 'data_retrain.yaml'을 생성합니다.
     t1_sync = BashOperator(
         task_id='sync_data_from_s3',
         bash_command=f'{PYTHON_BIN} {SCRIPTS_DIR}/sync_data.py',
         cwd=PROJECT_ROOT
     )
 
-    # 2. Train FP32 Model (Fine-tuning with new data)
-    # Uses run_id for unique experiment name (robust across Airflow versions)
-    run_id = "{{ run_id }}"
+    # 2. FP32 모델 학습 (새로운 데이터 셋 기반 재학습)
+    # 파일 경로 충돌을 방지하기 위해 특수문자가 없는 Airflow의 'ts_nodash'를 실험명으로 사용합니다.
+    run_id = "{{ ts_nodash }}"
     
     t2_train_fp32 = BashOperator(
         task_id='train_fp32_model',
@@ -48,8 +48,8 @@ with DAG(
         cwd=PROJECT_ROOT
     )
 
-    # 3. Train QAT Model
-    # Inputs: data_retrain.yaml (from t1) and best.pt (from t2)
+    # 3. 양자화 인지 학습 (QAT)
+    # 입력값: data_retrain.yaml (t1에서 생성) 및 best.pt (t2에서 생성)
     fp32_best_pt = f"{PROJECT_ROOT}/runs/{run_id}_fp32/weights/best.pt"
     
     t3_train_qat = BashOperator(
@@ -58,11 +58,11 @@ with DAG(
         cwd=PROJECT_ROOT
     )
 
-    # 4. Export to ONNX
+    # 4. ONNX 모델 병합 및 추출
     export_cmd = f"""
     RUN_DIR="{PROJECT_ROOT}/runs/qat/{run_id}_qat"
     BEST_PT="${{RUN_DIR}}/weights/best.pt"
-    # Check for hybrid first (recalibrated)
+    # 재보정(Calibration)을 거친 최적의 하이브리드 모델을 우선 선택합니다.
     if [ -f "${{RUN_DIR}}/weights/best_hybrid.pt" ]; then
         BEST_PT="${{RUN_DIR}}/weights/best_hybrid.pt"
     elif [ -f "${{RUN_DIR}}/weights/best_qat_fallback.pt" ]; then
@@ -71,7 +71,7 @@ with DAG(
     
     ONNX_OUTPUT="${{RUN_DIR}}/weights/best.onnx"
     
-    echo "Exporting ${{BEST_PT}}..."
+    echo "ONNX 변환 진행 중: ${{BEST_PT}}..."
     {PYTHON_BIN} {SCRIPTS_DIR}/export_qat.py --weights "${{BEST_PT}}" --base-weights {fp32_best_pt} --output "${{ONNX_OUTPUT}}"
     """
 
@@ -82,9 +82,9 @@ with DAG(
         cwd=PROJECT_ROOT
     )
     
-    # 5. Register to MLflow (Metadata Only)
-    # Since we are not deploying to edge, we just register the artifact/model in MLflow for record.
-    # We pass the ONNX path.
+    # 5. MLflow 모델 레지스트리 등록 (메타데이터만 관리)
+    # 엣지 런타임에 직접 배포하지 않고, MLflow 아티팩트로만 기록을 남깁니다.
+    # 등록 대상으로 추출된 ONNX 파일 경로를 전달합니다.
     register_cmd = f"""
     RUN_DIR="{PROJECT_ROOT}/runs/qat/{run_id}_qat"
     ONNX_PATH="${{RUN_DIR}}/weights/best.onnx"
@@ -99,3 +99,4 @@ with DAG(
     )
 
     t1_sync >> t2_train_fp32 >> t3_train_qat >> t3_export >> t5_register
+

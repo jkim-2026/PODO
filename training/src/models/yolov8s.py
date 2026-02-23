@@ -25,12 +25,12 @@ def get_model(config):
     weights_path = os.path.join(base_dir, "pretrained_weights", model_name)
 
     if os.path.exists(weights_path):
-        print(f"Loading model from: {weights_path}")
+        print(f"다음 경로에서 모델을 로드합니다: {weights_path}")
         model = YOLO(weights_path)
     else:
         # 없으면 ultralytics가 자동 다운로드
-        print(f"Pretrained weights not found at {weights_path}")
-        print(f"Downloading {model_name} from ultralytics...")
+        print(f"{weights_path} 경로에서 사전 학습된 가중치를 찾을 수 없습니다.")
+        print(f"Ultralytics를 통해 {model_name} 다운로드를 시도합니다...")
         model = YOLO(model_name)
 
     return model
