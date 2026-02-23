@@ -7,4 +7,8 @@ requires-python = ">=3.11"
 dependencies = [
     "numpy>=2.4.1",
     "opencv-python>=4.13.0.90",
+    "ultralytics>=8.3.253",
+    "wandb>=0.24.0",
+    "requests>=2.32.5",
+    "python-dotenv>=1.0.1",
 ]

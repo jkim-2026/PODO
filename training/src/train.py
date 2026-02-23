@@ -1,3 +1,5 @@
+import os
+
 class PCBTrainer:
     def __init__(self, model, config):
         self.model = model
@@ -19,7 +21,18 @@ class PCBTrainer:
         
         # WandB Setup
         if self.config.get('wandb_project'):
-            wandb.init(project=self.config['wandb_project'], name=f"{self.config['exp_name']}_fold", reinit=True)
+            wandb_project_str = self.config['wandb_project']
+            # Support 'entity/project' format by splitting on '/'
+            if '/' in wandb_project_str:
+                wandb_entity, wandb_project = wandb_project_str.split('/', 1)
+            else:
+                wandb_entity, wandb_project = None, wandb_project_str
+            wandb.init(
+                entity=wandb_entity,
+                project=wandb_project,
+                name=f"{self.config['exp_name']}",
+                reinit=True
+            )
             
         # Scheduler Logic
         # YOLOv8 uses 'cos_lr' argument: True=Cosine, False=Linear

@@ -48,13 +48,14 @@ class InferenceWorker(threading.Thread):
         print(f"[InferenceWorker] 모델 로드 완료: {config.MODEL_PATH}")
 
         # 모니터링 스레드 실행
+        self._monitor_running = True
         self.monitor_thread = threading.Thread(target=self._monitor_model_updates, daemon=True)
         self.monitor_thread.start()
 
     def _monitor_model_updates(self):
         """별도 스레드에서 주기적으로 WandB를 체크하고 모델을 업데이트함"""
         print(f"[InferenceWorker] 모델 업데이트 모니터링 시작 (주기: {config.CHECK_INTERVAL}초)")
-        while self.running:
+        while self._monitor_running:
             try:
                 # 1. WandB 체크 및 필요 시 엔진 변환 (이 작업이 오래 걸려도 추론은 멈추지 않음)
                 new_engine_path = self.model_manager.check_for_updates()
@@ -179,4 +180,5 @@ class InferenceWorker(threading.Thread):
     def stop(self):
         """워커 종료"""
         self.running = False
+        self._monitor_running = False
         print("[InferenceWorker] 중지 중...")
