@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 import logging
 
 # Import routers, database, and config
-from routers import detect, stats, sessions, images, monitoring, feedback
+from routers import detect, stats, sessions, images, monitoring, feedback, analysis
 from database.db import init_db
 from database import db
 from config import settings
@@ -58,6 +58,7 @@ app.include_router(sessions.router)
 app.include_router(images.router)
 app.include_router(monitoring.router)
 app.include_router(feedback.router)
+app.include_router(analysis.router)
 
 
 @app.get("/")
