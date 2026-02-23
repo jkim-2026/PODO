@@ -30,6 +30,8 @@ logs/
 
 # Database
 *.db
+*.db-shm
+*.db-wal
 *.sqlite3
 
 # Defect images (runtime generated)
@@ -46,6 +48,8 @@ training/runs/
 *.pt
 training/aws/
 runs/
+simple_auth_manager_passwords.json.generated
+aws/
 
 # Tracking
 mlruns/
