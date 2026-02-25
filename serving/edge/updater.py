@@ -178,6 +178,7 @@ class ModelUpdater:
         else:
             print("📉 신규 모델 성능 미달 → 기각")
             self.report_status(version, "rejected", "Lower mAP50", new_map, meta.get("run_id"))
+            self.demote_in_mlflow(version)
 
     # ── Golden Set 평가 ──────────────────────────────────────────────────────
 
@@ -275,6 +276,21 @@ class ModelUpdater:
             print(f"✅ MLflow 업데이트 완료: v{version_str} → Production")
         except Exception as e:
             print(f"⚠️  MLflow 스테이지 전환 실패: {e}")
+            
+    def demote_in_mlflow(self, version_str):
+        """성능 미달 모델을 Archived로 전환합니다."""
+        if not self.client:
+            return
+        try:
+            print(f"📦 MLflow Registry: v{version_str} → Archived (성능 미달)")
+            self.client.transition_model_version_stage(
+                name=self.model_name,
+                version=str(version_str),
+                stage="Archived"
+            )
+            print(f"✅ MLflow 업데이트 완료: v{version_str} → Archived")
+        except Exception as e:
+            print(f"⚠️  MLflow Archived 전환 실패: {e}")
 
     # ── 상태 보고 ────────────────────────────────────────────────────────────
 
