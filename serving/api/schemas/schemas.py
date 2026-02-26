@@ -38,6 +38,7 @@ class DetectRequest(BaseModel):
     image: Optional[str] = Field(None, description="Base64 encoded image string (optional)")
     detections: List[Detection] = Field(default_factory=list, description="결함 목록 (빈 배열 = 정상)")
     session_id: Optional[int] = Field(None, description="세션 ID (optional)")
+    camera_id: Optional[str] = Field(None, description="카메라 ID (예: cam_1, cam_2)")
 
 
 # --- Response Models ---
@@ -65,6 +66,7 @@ class InspectionLogResponse(BaseModel):
     detections: List[Detection] = Field(default_factory=list, description="List of detected defects")
     image_path: Optional[str] = Field(None, description="Path to saved image file")
     session_id: Optional[int] = Field(None, description="세션 ID")
+    camera_id: Optional[str] = Field(None, description="카메라 ID")
     # 기존 confidence, defect_type, bbox 필드는 detections 리스트 안에 포함됨
 
 
