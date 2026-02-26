@@ -27,17 +27,33 @@ from upload_worker import UploadWorker
 
 
 
-def start_session(session_url: str) -> int:
+def get_current_model_version() -> str:
+    """
+    현재 모델 버전을 반환.
+    .reload_model 파일에 버전이 기록되어 있으면 해당 버전, 없으면 "v0".
+    """
+    if os.path.exists(config.RELOAD_FLAG_PATH):
+        try:
+            with open(config.RELOAD_FLAG_PATH, 'r') as f:
+                version = f.read().strip()
+                return f"v{version}" if version else "v0"
+        except Exception:
+            pass
+    return "v0"
+
+
+def start_session(session_url: str, model_name: str = None) -> int:
     """
     백엔드에 세션 시작을 요청하고 세션 ID를 반환.
     실패 시 None 반환.
     """
     try:
-        response = requests.post(session_url, timeout=5.0)
+        payload = {"model_name": model_name}
+        response = requests.post(session_url, json=payload, timeout=5.0)
         if response.status_code == 201:
             data = response.json()
             session_id = data.get("id")
-            print(f"[Main] 세션 시작: ID={session_id}")
+            print(f"[Main] 세션 시작: ID={session_id}, 모델={model_name}")
             return session_id
         else:
             print(f"[Main] 세션 시작 실패: HTTP {response.status_code}")
@@ -153,7 +169,8 @@ def main():
     # 세션 시작
     session_id = None
     if not args.no_session:
-        session_id = start_session(args.session_url)
+        model_version = get_current_model_version()
+        session_id = start_session(args.session_url, model_name=model_version)
 
     # Queue 생성
     frame_queue = queue.Queue(maxsize=config.FRAME_QUEUE_SIZE * len(input_sources))
