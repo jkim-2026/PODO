@@ -128,51 +128,78 @@ class InferenceWorker(threading.Thread):
     def run(self):
         self.running = True
         print(f"[InferenceWorker] 추론 큐 모니터링 시작...")
-        
-        while self.running:
-            try:
-                # 핫스왑 플래그 검사 (너무 자주 검사하지 않게 큐 대기 시간 이용)
-                if os.path.exists(config.RELOAD_FLAG_PATH):
-                    try:
-                        self.reload_model()
-                        os.remove(config.RELOAD_FLAG_PATH)
-                    except OSError:
-                        pass # 파일 지우기 충돌 무시
+        # busy 플래그는 "실제로 추론을 수행하는 동안"만 유지합니다.
+        busy = False
+        last_active = 0.0
+        idle_timeout = getattr(config, 'INFERENCE_IDLE_TIMEOUT_S', 5)
 
-                # 큐에서 이미지 가져오기
-                camera_id, crop = self.crop_queue.get(timeout=1.0)
-                
-                # 추론 수행 — Lock 안에서 실행하여 Hot-Swap과의 Race Condition 방지
-                # reload_model()이 새 모델 포인터를 교체하는 순간과 충돌하지 않음
-                # predict() 소요시간(~10-50ms)이 Lock 점유 시간이므로 영향 미미
-                start = time.time()
-                with self._model_lock:
-                    results = self.model.predict(crop, conf=0.25, verbose=False)
-                inference_time = time.time() - start
-                print(f"[InferenceWorker][{camera_id}] 추론 시간: {inference_time*1000:.1f}ms")
-                
-                # 결과 포매팅
-                payload = self._create_payload(camera_id, crop, results[0])
-
-                
-                # 업로드 큐에 추가
+        try:
+            while self.running:
                 try:
-                    self.upload_queue.put_nowait(payload)
-                except queue.Full:
-                    # 업로드 큐가 가득 차면 가장 오래된 것 버림
+                    # 핫스왑 플래그 검사 (너무 자주 검사하지 않게 큐 대기 시간 이용)
+                    if os.path.exists(config.RELOAD_FLAG_PATH):
+                        try:
+                            self.reload_model()
+                            os.remove(config.RELOAD_FLAG_PATH)
+                        except OSError:
+                            pass # 파일 지우기 충돌 무시
+
+                    # 큐에서 이미지 가져오기
+                    camera_id, crop = self.crop_queue.get(timeout=1.0)
+
+                    # 실제 추론을 시작하면 busy 플래그 생성
+                    if not busy:
+                        try:
+                            open(config.INFERENCE_BUSY_FLAG_PATH, 'w').close()
+                            busy = True
+                            print("[InferenceWorker] 추론 활성화 — busy 플래그 생성")
+                        except Exception:
+                            pass
+
+                    # 추론 수행 — Lock 안에서 실행하여 Hot-Swap과의 Race Condition 방지
+                    start = time.time()
+                    with self._model_lock:
+                        results = self.model.predict(crop, conf=0.25, verbose=False)
+                    inference_time = time.time() - start
+                    last_active = time.time()
+                    print(f"[InferenceWorker][{camera_id}] 추론 시간: {inference_time*1000:.1f}ms")
+
+                    # 결과 포매팅
+                    payload = self._create_payload(camera_id, crop, results[0])
+
+                    # 업로드 큐에 추가
                     try:
-                        self.upload_queue.get_nowait()
                         self.upload_queue.put_nowait(payload)
-                    except queue.Empty:
-                        pass
-                
-                self.crop_queue.task_done()
-                
-            except queue.Empty:
-                continue
-            except Exception as e:
-                print(f"[InferenceWorker] 루프 중 오류 발생: {e}")
-                time.sleep(0.1)
+                    except queue.Full:
+                        try:
+                            self.upload_queue.get_nowait()
+                            self.upload_queue.put_nowait(payload)
+                        except queue.Empty:
+                            pass
+
+                    self.crop_queue.task_done()
+
+                except queue.Empty:
+                    # 큐가 비어있고 일정 시간(idle_timeout) 경과하면 busy 플래그 제거
+                    if busy and (time.time() - last_active) >= idle_timeout:
+                        try:
+                            if os.path.exists(config.INFERENCE_BUSY_FLAG_PATH):
+                                os.remove(config.INFERENCE_BUSY_FLAG_PATH)
+                            print("[InferenceWorker] 추론 비활성화 — busy 플래그 제거 (idle)")
+                        except Exception:
+                            pass
+                        busy = False
+                    continue
+                except Exception as e:
+                    print(f"[InferenceWorker] 루프 중 오류 발생: {e}")
+                    time.sleep(0.1)
+        finally:
+            # 워커 종료 시 busy 플래그 제거
+            try:
+                if os.path.exists(config.INFERENCE_BUSY_FLAG_PATH):
+                    os.remove(config.INFERENCE_BUSY_FLAG_PATH)
+            except Exception:
+                pass
 
     def _create_payload(self, camera_id, crop, result):
         """추론 결과를 백엔드 스펙에 맞는 페이로드로 구성"""

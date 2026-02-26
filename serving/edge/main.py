@@ -139,6 +139,11 @@ def main():
         help="세션 관리 비활성화"
     )
     parser.add_argument(
+        "--no-updater",
+        action="store_true",
+        help="업데이트 프로세스(updater.py) 자동 실행 비활성화"
+    )
+    parser.add_argument(
         "--max-crops",
         type=int,
         default=0,
@@ -154,17 +159,17 @@ def main():
     args = parser.parse_args()
 
     # 입력 소스 처리
-    if args.num_cameras > 1:
-        # 단일 주소가 들어오면 자동으로 _1, _2... 를 붙여서 확장
+    # 카메라 수(num_cameras) 만큼의 URL을 생성합니다. 기본 RTSP 주소에
+    # "_1", "_2" ... 번호를 덧붙이는 방식이며, 파일(확장자 .mp4/.avi/.mkv)인
+    # 경우에는 번호 없이 동일 파일을 반복합니다.
+    if args.num_cameras >= 1:
         base_url = args.input
-        # 확장자가 있는 파일이 아닌 경우에만 숫자를 붙임
         if not any(base_url.lower().endswith(ext) for ext in ['.mp4', '.avi', '.mkv']):
             input_sources = [f"{base_url}_{i+1}" for i in range(args.num_cameras)]
         else:
-            # 파일인 경우 동일 파일을 n번 수신 (테스트용)
             input_sources = [base_url] * args.num_cameras
     else:
-        # 기존처럼 쉼표로 구분된 입력을 리스트로 변환
+        # num_cameras 가 0 이면 comma-separated list를 그대로 사용
         input_sources = [s.strip() for s in args.input.split(',')]
 
     # 동적 설정 업데이트 (CLI 인자 우선)
@@ -221,14 +226,9 @@ def main():
     # 4. 추론 워커 가동
     inference_worker.start()
 
-    # 5. 백그라운드 업데이터 프로세스 실행
-    print("[Main] 백그라운드 모델 업데이터(updater.py) 시작 중...")
-    updater_process = subprocess.Popen(
-        [sys.executable, "-u", "updater.py"],
-        stdout=sys.stdout,
-        stderr=sys.stderr,
-        cwd=os.path.dirname(os.path.abspath(__file__))
-    )
+    # 5. 백그라운드 업데이터 프로세스는 main이 직접 실행하지 않습니다.
+    #    외부에서 updater.py를 별도 서비스/스크립트로 구동하세요.
+    updater_process = None
 
     # 전처리기 초기화
     preprocessor = PCBPreprocessor(config.BACKGROUND_PATH)
@@ -262,7 +262,10 @@ def main():
                 camera_id, frame = frame_queue.get(timeout=1.0)
             except queue.Empty:
                 if all(not r.is_running() for r in receivers):
-                    break
+                    # 모든 수신기가 오프라인이더라도 메인 프로세스는 종료하지 않고
+                    # 재접속을 기다립니다. (RTSPReceiver가 재접속을 시도함)
+                    time.sleep(1)
+                    continue
                 continue
 
             frame_count += 1
@@ -294,15 +297,7 @@ def main():
     finally:
         print("[Main] 리소스 정리 중...")
         
-        # 업데이터 프로세스 종료
-        if 'updater_process' in locals() and updater_process.poll() is None:
-            print("[Main] 업데이터 프로세스 종료 중...")
-            updater_process.terminate()
-            try:
-                updater_process.wait(timeout=3.0)
-            except subprocess.TimeoutExpired:
-                updater_process.kill()
-                
+        # 모든 워커 정지
         for r in receivers:
             r.stop()
         inference_worker.stop()
@@ -320,12 +315,10 @@ def main():
         fps = frame_count / elapsed if elapsed > 0 else 0
 
         print("\n[Main] === 최종 통계 ===")
-        print(f"  처리 프레임: {frame_count}")
-        print(f"  포착된 PCB: {crop_count}")
-        print(f"  실행 시간: {elapsed:.1f}초")
-        print(f"  평균 성능: {fps:.1f} FPS")
-        for r in receivers:
-            print(f"  [{r.camera_id}] 상태: {r.get_stats()}")
+        print(f"  처리 프레임: {frame_count}, 포착 PCB: {crop_count}, 실행 시간: {elapsed:.1f}s, 평균 FPS: {fps:.1f}")
+        if receivers:
+            stats = ", ".join(f"{r.camera_id}:{r.get_stats()['frame_count']}f/{r.get_stats()['drop_count']}d" for r in receivers)
+            print(f"  카메라 통계 ({len(receivers)}): {stats}")
         print(f"  세션 ID: {session_id if session_id else '없음'}")
 
 
