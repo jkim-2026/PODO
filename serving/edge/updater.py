@@ -25,8 +25,10 @@ except ImportError:
 
 class ModelUpdater:
     def __init__(self, interval=None):
-        self.current_version = "0"
         os.makedirs(config.MODELS_DIR, exist_ok=True)
+        
+        # 저장된 버전 정보에서 현재 버전 복원
+        self.current_version = self._load_current_version()
 
         # S3 Client setup
         self.s3_client = boto3.client(
@@ -52,6 +54,41 @@ class ModelUpdater:
         self.interval = interval if interval is not None else config.MODEL_POLL_INTERVAL
 
     # ── 유틸리티 ────────────────────────────────────────────────────────────
+
+    def _load_current_version(self) -> str:
+        """저장된 버전 정보 파일에서 현재 버전을 복원합니다."""
+        version_file_path = os.path.join(config.MODELS_DIR, "current_version.json")
+        
+        # 방법 1: current_version.json에서 읽기
+        if os.path.exists(version_file_path):
+            try:
+                with open(version_file_path, "r") as f:
+                    version_info = json.load(f)
+                    model_name = version_info.get("model_name", "")
+                    # model_name 형식: yolov11m_v3 → v3 추출
+                    if "_v" in model_name:
+                        version = model_name.split("_v")[-1]
+                        print(f"📂 저장된 버전 복원: v{version}")
+                        return version
+            except Exception as e:
+                print(f"⚠️  version 파일 읽기 실패: {e}")
+        
+        # 방법 2: current.engine 심링크에서 버전 추출
+        if os.path.islink(config.MODEL_PATH):
+            try:
+                target = os.readlink(config.MODEL_PATH)
+                basename = os.path.basename(target)
+                # basename 형식: v3.engine → v3 추출
+                if basename.startswith("v") and basename.endswith(".engine"):
+                    version = basename.replace("v", "").replace(".engine", "")
+                    print(f"📂 심링크에서 버전 추출: v{version}")
+                    return version
+            except Exception as e:
+                print(f"⚠️  심링크 읽기 실패: {e}")
+        
+        # 기본값
+        print("📂 저장된 버전 없음 → 기본값 v0 사용")
+        return "0"
 
     def _wait_until_idle(self, context: str = ""):
         """`config.INFERENCE_BUSY_FLAG_PATH`가 사라질 때까지 대기합니다.
