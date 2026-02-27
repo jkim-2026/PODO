@@ -38,6 +38,7 @@ class DetectRequest(BaseModel):
     image: Optional[str] = Field(None, description="Base64 encoded image string (optional)")
     detections: List[Detection] = Field(default_factory=list, description="결함 목록 (빈 배열 = 정상)")
     session_id: Optional[int] = Field(None, description="세션 ID (optional)")
+    camera_id: Optional[str] = Field(None, description="카메라 ID (예: cam_1, cam_2)")
 
 
 # --- Response Models ---
@@ -65,6 +66,7 @@ class InspectionLogResponse(BaseModel):
     detections: List[Detection] = Field(default_factory=list, description="List of detected defects")
     image_path: Optional[str] = Field(None, description="Path to saved image file")
     session_id: Optional[int] = Field(None, description="세션 ID")
+    camera_id: Optional[str] = Field(None, description="카메라 ID")
     # 기존 confidence, defect_type, bbox 필드는 detections 리스트 안에 포함됨
 
 
@@ -84,6 +86,13 @@ class StatsResponse(BaseModel):
 
 # ===== 세션 관련 스키마 =====
 
+class SessionCreateRequest(BaseModel):
+    """
+    세션 생성 요청
+    """
+    model_name: Optional[str] = Field(None, description="현재 사용 모델 파일명 (예: yolov11m_v2)")
+
+
 class SessionResponse(BaseModel):
     """
     세션 정보 응답
@@ -91,6 +100,7 @@ class SessionResponse(BaseModel):
     id: int = Field(..., description="세션 ID")
     started_at: str = Field(..., description="세션 시작 시간 (ISO 8601)")
     ended_at: Optional[str] = Field(None, description="세션 종료 시간 (ISO 8601)")
+    model_name: Optional[str] = Field(None, description="사용 모델명")
 
 
 class SessionCreateResponse(BaseModel):
@@ -99,6 +109,7 @@ class SessionCreateResponse(BaseModel):
     """
     id: int = Field(..., description="생성된 세션 ID")
     started_at: str = Field(..., description="세션 시작 시간 (ISO 8601)")
+    model_name: Optional[str] = Field(None, description="사용 모델명")
 
 
 class SessionListResponse(BaseModel):
@@ -177,6 +188,7 @@ class HealthResponse(BaseModel):
     defect_confidence_stats: Optional[DefectConfidenceStats] = Field(None, description="결함 신뢰도 통계")
     defect_type_stats: List[DefectTypeStat] = Field(default_factory=list, description="결함 타입별 통계")
     alerts: List[AlertInfo] = Field(default_factory=list, description="알림 목록")
+    active_model: Optional[str] = Field(None, description="현재 활성화된 모델 버전")
 
 
 class AlertsResponse(BaseModel):
@@ -189,6 +201,7 @@ class AlertsResponse(BaseModel):
     session_info: SessionInfo = Field(..., description="세션 정보")
     alerts: List[AlertInfo] = Field(default_factory=list, description="알림 목록")
     summary: dict = Field(..., description="간단한 요약 (defect_rate, avg_confidence)")
+    active_model: Optional[str] = Field(None, description="현재 활성화된 모델 버전")
 
 
 # ===== 피드백 관련 스키마 (Bulk 전용) =====
@@ -215,13 +228,16 @@ class FeedbackItem(BaseModel):
         from config.settings import ALLOWED_FEEDBACK_LABELS
 
         # FeedbackRequest와 동일한 검증 로직 재사용 (DRY 원칙)
-        if self.feedback_type == 'tp_wrong_class':
+        if self.feedback_type in ['tp_wrong_class', 'false_negative']:
             if not self.correct_label:
-                raise ValueError("correct_label required for tp_wrong_class")
+                raise ValueError(f"correct_label required for {self.feedback_type}")
             if self.correct_label not in ALLOWED_FEEDBACK_LABELS:
                 raise ValueError(f"correct_label must be one of {ALLOWED_FEEDBACK_LABELS}")
+            # FN인데 "normal"은 모순 (결함을 놓친 것이므로 결함 타입이어야 함)
+            if self.feedback_type == 'false_negative' and self.correct_label == 'normal':
+                raise ValueError("false_negative의 correct_label은 'normal'일 수 없습니다")
 
-        if self.feedback_type in ['false_positive', 'tp_wrong_class']:
+        if self.feedback_type in ['false_positive', 'tp_wrong_class', 'false_negative']:
             if not self.target_bbox:
                 raise ValueError(f"target_bbox required for {self.feedback_type}")
 
@@ -240,8 +256,8 @@ class BulkFeedbackRequest(BaseModel):
     """
     다중 bbox 피드백 생성 요청 (자동 재라벨링)
 
-    false_negative는 feedbacks 배열에 포함하여 제출:
-    {"feedback_type": "false_negative", "comment": "좌측 하단 scratch 누락"}
+    false_negative는 bbox + correct_label 필수:
+    {"feedback_type": "false_negative", "target_bbox": [150, 200, 300, 350], "correct_label": "scratch", "comment": "좌측 하단 scratch 누락"}
     """
     log_id: int = Field(..., gt=0)
     image_width: int = Field(..., gt=0, description="크롭된 이미지 너비 (픽셀)")
