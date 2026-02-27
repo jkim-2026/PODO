@@ -30,17 +30,24 @@ async def init_db():
 
     async with aiosqlite.connect(DB_PATH) as db:
         # 세션 테이블 생성
+        # model_name을 저장하기 위해 컬럼 추가; 기존 mlops_version/yolo_version은 더 이상 사용되지 않습니다.
         await db.execute("""
             CREATE TABLE IF NOT EXISTS sessions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 started_at TEXT NOT NULL,
                 ended_at TEXT,
+                model_name TEXT,
                 mlops_version TEXT,
                 yolo_version TEXT
             )
         """)
 
         # 기존 sessions 테이블 마이그레이션 (필요시 컬럼 추가)
+        try:
+            await db.execute("ALTER TABLE sessions ADD COLUMN model_name TEXT")
+        except aiosqlite.OperationalError:
+            pass
+        # 과거 컬럼명도 명목상 유지하되 사용 안 함
         try:
             await db.execute("ALTER TABLE sessions ADD COLUMN mlops_version TEXT")
             await db.execute("ALTER TABLE sessions ADD COLUMN yolo_version TEXT")
@@ -371,7 +378,12 @@ async def create_session(model_name: Optional[str] = None) -> Dict:
         await db.commit()
         session_id = cursor.lastrowid
 
-    return {"id": session_id, "started_at": started_at, "ended_at": None, "model_name": model_name}
+    return {
+        "id": session_id, 
+        "started_at": started_at, 
+        "ended_at": None, 
+        "model_name": model_name
+    }
 
 
 async def end_session(session_id: int) -> Optional[Dict]:
@@ -400,11 +412,17 @@ async def end_session(session_id: int) -> Optional[Dict]:
         )
         await db.commit()
 
+        mlops_ver = row["mlops_version"]
+        yolo_ver = row["yolo_version"]
+        model_name = f"{yolo_ver}_{mlops_ver}" if yolo_ver and mlops_ver else (yolo_ver or mlops_ver)
+
         return {
             "id": session_id,
             "started_at": row["started_at"],
             "ended_at": ended_at,
-            "model_name": row["model_name"]
+            "mlops_version": mlops_ver,
+            "yolo_version": yolo_ver,
+            "model_name": model_name
         }
 
 
@@ -418,8 +436,14 @@ async def get_sessions() -> List[Dict]:
             "SELECT * FROM sessions ORDER BY id DESC"
         )
         rows = await cursor.fetchall()
-
-        return [dict(row) for row in rows]
+        results = []
+        for row in rows:
+            d = dict(row)
+            mlops_ver = d.get("mlops_version")
+            yolo_ver = d.get("yolo_version")
+            d["model_name"] = f"{yolo_ver}_{mlops_ver}" if yolo_ver and mlops_ver else (yolo_ver or mlops_ver)
+            results.append(d)
+        return results
 
 
 async def get_session(session_id: int) -> Optional[Dict]:
@@ -435,7 +459,11 @@ async def get_session(session_id: int) -> Optional[Dict]:
         row = await cursor.fetchone()
 
         if row:
-            return dict(row)
+            d = dict(row)
+            mlops_ver = d.get("mlops_version")
+            yolo_ver = d.get("yolo_version")
+            d["model_name"] = f"{yolo_ver}_{mlops_ver}" if yolo_ver and mlops_ver else (yolo_ver or mlops_ver)
+            return d
         return None
 
 
@@ -643,12 +671,20 @@ async def get_session_info(session_id: Optional[int]) -> SessionInfo:
         else:
             duration_seconds = None
 
+        # model_name 추출 (새 컬럼 우선, 없으면 구버전 조합)
+        model_name = row["model_name"]
+        if not model_name:
+            mlops_ver = row["mlops_version"]
+            yolo_ver = row["yolo_version"]
+            model_name = f"{yolo_ver}_{mlops_ver}" if yolo_ver and mlops_ver else (yolo_ver or mlops_ver)
+
         return SessionInfo(
             id=session_id,
             started_at=started_at,
             ended_at=ended_at,
             duration_seconds=round(duration_seconds, 1) if duration_seconds else None,
-            is_active=is_active
+            is_active=is_active,
+            model_name=model_name
         )
 
 
@@ -808,8 +844,8 @@ async def get_health(session_id: Optional[str]) -> HealthResponse:
 
     # 활성 모델 버전 추출 (session_info가 존재할 경우)
     active_model = None
-    if session_info:
-        active_model = session_info.get("model_name")
+    if session_info and session_info.id is not None:
+        active_model = session_info.model_name
 
     return HealthResponse(
         status=status,
@@ -928,7 +964,14 @@ async def get_feedback_queue(session_id: Optional[int] = None) -> List[Dict]:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(query, params)
         rows = await cursor.fetchall()
-        return [dict(row) for row in rows]
+        results = []
+        for row in rows:
+            d = dict(row)
+            mlops_ver = d.get("mlops_version")
+            yolo_ver = d.get("yolo_version")
+            d["model_name"] = f"{yolo_ver}_{mlops_ver}" if yolo_ver and mlops_ver else (yolo_ver or mlops_ver)
+            results.append(d)
+        return results
 
 async def resolve_feedback(feedback_id: int):
     """

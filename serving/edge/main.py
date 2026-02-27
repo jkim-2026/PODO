@@ -27,43 +27,69 @@ from upload_worker import UploadWorker
 
 
 
-def get_current_model_version() -> str:
+def get_current_model_version() -> dict:
     """
-    현재 모델 버전(model_name)을 반환.
-    current_version.json 파일이 있으면 해당 버전을, 없으면 기본값 반환.
+    현재 모델 버전 정보를 반환.
+    current_version.json 파일이 있으면 해당 딕셔너리를, 없으면 기본값 반환.
     """
     version_file = os.path.join(os.path.dirname(config.MODEL_PATH), "current_version.json")
-    model_name = "yolov11m_v0"
+    
+    # 기본값
+    v_info = {
+        "model_name": "yolov11m_v0",
+        "yolo_version": "yolov11m",
+        "mlops_version": "v0"
+    }
     
     if os.path.exists(version_file):
         try:
             import json
             with open(version_file, 'r') as f:
-                v_info = json.load(f)
-                model_name = v_info.get("model_name", "yolov11m_v0")
+                data = json.load(f)
+                print(f"[Main] 모델 버전 파일 로드: {version_file}")
+                # updater.py가 쓰는 model_name 필드 처리
+                if "model_name" in data:
+                    v_info["model_name"] = data["model_name"]
+                    print(f"       - 로드된 모델명: {v_info['model_name']}")
+                    # model_name에서 yolo_version과 mlops_version 파싱 시도 (선택 사항)
+                    parts = data["model_name"].split('_')
+                    if len(parts) >= 2:
+                        v_info["yolo_version"] = parts[0]
+                        v_info["mlops_version"] = parts[1]
+                else:
+                    v_info.update(data)
         except Exception as e:
             print(f"[Main] 모델 버전 파일 읽기 에러: {e}")
             
-    return model_name
+    return v_info
 
 
-def start_session(session_url: str, model_name: str = None) -> int:
+def start_session(session_url: str, model_info: dict) -> int:
     """
     백엔드에 세션 시작을 요청하고 세션 ID를 반환.
     실패 시 None 반환.
     """
     try:
+        api_key = os.getenv("EDGE_API_KEY")
+        headers = {}
+        if api_key:
+            headers["X-API-KEY"] = api_key
+            
+        model_name = model_info.get("model_name", "yolov11m_v0")
+        print(f"[Main] 세션 요청 시작 (모델: {model_name})")
         payload = {
             "model_name": model_name
         }
-        response = requests.post(session_url, json=payload, timeout=5.0)
+        response = requests.post(session_url, json=payload, headers=headers, timeout=5.0)
         if response.status_code == 201:
             data = response.json()
             session_id = data.get("id")
-            print(f"[Main] 세션 시작: ID={session_id}, 모델명={model_name}")
+            print(f"[Main] 🚀 세션 시작 성공!")
+            print(f"       - 세션 ID: {session_id}")
+            print(f"       - 활성 모델: {model_name}")
             return session_id
         else:
-            print(f"[Main] 세션 시작 실패: HTTP {response.status_code}")
+            print(f"[Main] ❌ 세션 시작 실패: HTTP {response.status_code} ({response.text})")
             return None
     except requests.exceptions.RequestException as e:
         print(f"[Main] 세션 시작 요청 실패: {e}")
@@ -78,7 +104,12 @@ def end_session(session_url: str, session_id: int):
         return
 
     try:
-        response = requests.patch(f"{session_url}{session_id}", timeout=5.0)
+        api_key = os.getenv("EDGE_API_KEY")
+        headers = {}
+        if api_key:
+            headers["X-API-KEY"] = api_key
+            
+        response = requests.patch(f"{session_url}{session_id}", headers=headers, timeout=5.0)
         if response.status_code == 200:
             print(f"[Main] 세션 종료: ID={session_id}")
         else:
@@ -156,15 +187,21 @@ def main():
     args = parser.parse_args()
 
     # 입력 소스 처리
-    # 카메라 수(num_cameras) 만큼의 URL을 생성합니다. 기본 RTSP 주소에
-    # "_1", "_2" ... 번호를 덧붙이는 방식이며, 파일(확장자 .mp4/.avi/.mkv)인
-    # 경우에는 번호 없이 동일 파일을 반복합니다.
+    # num_cameras > 1일 때 기본 RTSP 주소 뒤에 "_1", "_2" ...을 붙입니다.
+    # 단, 비디오 파일(.mp4/.avi/.mkv)인 경우에는 같은 파일을 복제합니다.
+    # num_cameras == 1이면 사용자가 전달한 입력 문자열을 그대로 사용하여
+    # 특정 주소를 직접 지정할 수 있도록 합니다.
     if args.num_cameras >= 1:
         base_url = args.input
-        if not any(base_url.lower().endswith(ext) for ext in ['.mp4', '.avi', '.mkv']):
-            input_sources = [f"{base_url}_{i+1}" for i in range(args.num_cameras)]
+        if args.num_cameras == 1:
+            # 단일 카메라는 suffix 없이 입력 그대로
+            input_sources = [base_url]
         else:
-            input_sources = [base_url] * args.num_cameras
+            # 다중 카메라일 때만 _1, _2 ... 붙이기
+            if not any(base_url.lower().endswith(ext) for ext in ['.mp4', '.avi', '.mkv']):
+                input_sources = [f"{base_url}_{i+1}" for i in range(args.num_cameras)]
+            else:
+                input_sources = [base_url] * args.num_cameras
     else:
         # num_cameras 가 0 이면 comma-separated list를 그대로 사용
         input_sources = [s.strip() for s in args.input.split(',')]
@@ -172,6 +209,14 @@ def main():
     # 동적 설정 업데이트 (CLI 인자 우선)
     config.API_URL = args.api_url
     config.MODEL_PATH = args.model
+    
+    # 세션 URL이 기본값인 경우 API_URL을 기준으로 자동 생성 (포트/경로 일관성 유지)
+    session_url = args.session_url
+    if "3.35.182.98" in session_url and "3.35.182.98" not in config.API_URL:
+        from urllib.parse import urlparse
+        parsed = urlparse(config.API_URL)
+        session_url = f"{parsed.scheme}://{parsed.netloc}/sessions/"
+        print(f"[Main] 세션 API 주소 자동 감지: {session_url}")
 
     # 배경 이미지 확인
     if not os.path.exists(config.BACKGROUND_PATH):
@@ -181,8 +226,8 @@ def main():
     # 세션 시작
     session_id = None
     if not args.no_session:
-        model_version = get_current_model_version()
-        session_id = start_session(args.session_url, model_name=model_version)
+        model_info = get_current_model_version()
+        session_id = start_session(session_url, model_info=model_info)
 
     # Queue 생성
     frame_queue = queue.Queue(maxsize=config.FRAME_QUEUE_SIZE * len(input_sources))
