@@ -98,14 +98,14 @@ class InferenceWorker(threading.Thread):
                 
                 # 2. 새 모델 버전 읽어오기
                 version_file = os.path.join(os.path.dirname(config.MODEL_PATH), "current_version.json")
-                mlops_ver, yolo_ver = "v0", "v0"
+                mlops_ver, yolo_ver = "v0", "yolov11m"
                 if os.path.exists(version_file):
                     try:
                         import json
                         with open(version_file, "r") as f:
                             v_info = json.load(f)
                             mlops_ver = v_info.get("mlops_version", "v0")
-                            yolo_ver = v_info.get("yolo_version", "v0")
+                            yolo_ver = v_info.get("yolo_version", "yolov11m")
                     except Exception as e:
                         pass
                 
