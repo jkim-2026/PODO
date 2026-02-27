@@ -33,14 +33,16 @@ def get_current_model_version() -> str:
     current_version.json 파일이 있으면 해당 버전을, 없으면 기본값 반환.
     """
     version_file = os.path.join(os.path.dirname(config.MODEL_PATH), "current_version.json")
-    model_name = "yolov11m_v0"
+    mlops_version = "v0"
+    yolo_version = "yolov11m"
     
     if os.path.exists(version_file):
         try:
             import json
             with open(version_file, 'r') as f:
                 v_info = json.load(f)
-                model_name = v_info.get("model_name", "yolov11m_v0")
+                mlops_version = v_info.get("mlops_version", "v0")
+                yolo_version = v_info.get("yolo_version", "yolov11m")
         except Exception as e:
             print(f"[Main] 모델 버전 파일 읽기 에러: {e}")
             
@@ -60,10 +62,14 @@ def start_session(session_url: str, model_name: str = None) -> int:
         if response.status_code == 201:
             data = response.json()
             session_id = data.get("id")
-            print(f"[Main] 세션 시작: ID={session_id}, 모델명={model_name}")
+            # 사용자 요청에 따른 yolov11m_v0 형태 로그 출력
+            combined_name = f"{yolo_version}_{mlops_version}"
+            print(f"[Main] 🚀 세션 시작 성공!")
+            print(f"       - 세션 ID: {session_id}")
+            print(f"       - 활성 모델: {combined_name}")
             return session_id
         else:
-            print(f"[Main] 세션 시작 실패: HTTP {response.status_code}")
+            print(f"[Main] ❌ 세션 시작 실패: HTTP {response.status_code} ({response.text})")
             return None
     except requests.exceptions.RequestException as e:
         print(f"[Main] 세션 시작 요청 실패: {e}")
@@ -178,6 +184,14 @@ def main():
     # 동적 설정 업데이트 (CLI 인자 우선)
     config.API_URL = args.api_url
     config.MODEL_PATH = args.model
+    
+    # 세션 URL이 기본값인 경우 API_URL을 기준으로 자동 생성 (포트/경로 일관성 유지)
+    session_url = args.session_url
+    if "3.35.182.98" in session_url and "3.35.182.98" not in config.API_URL:
+        from urllib.parse import urlparse
+        parsed = urlparse(config.API_URL)
+        session_url = f"{parsed.scheme}://{parsed.netloc}/sessions/"
+        print(f"[Main] 세션 API 주소 자동 감지: {session_url}")
 
     # 배경 이미지 확인
     if not os.path.exists(config.BACKGROUND_PATH):
@@ -187,8 +201,8 @@ def main():
     # 세션 시작
     session_id = None
     if not args.no_session:
-        model_version = get_current_model_version()
-        session_id = start_session(args.session_url, model_name=model_version)
+        mlops_ver, yolo_ver = get_current_model_version()
+        session_id = start_session(session_url, mlops_version=mlops_ver, yolo_version=yolo_ver)
 
     # Queue 생성
     frame_queue = queue.Queue(maxsize=config.FRAME_QUEUE_SIZE * len(input_sources))

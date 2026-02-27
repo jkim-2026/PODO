@@ -378,7 +378,15 @@ async def create_session(model_name: Optional[str] = None) -> Dict:
         await db.commit()
         session_id = cursor.lastrowid
 
-    return {"id": session_id, "started_at": started_at, "ended_at": None, "model_name": model_name}
+    model_name = f"{yolo_version}_{mlops_version}" if yolo_version and mlops_version else (yolo_version or mlops_version)
+    return {
+        "id": session_id, 
+        "started_at": started_at, 
+        "ended_at": None, 
+        "mlops_version": mlops_version, 
+        "yolo_version": yolo_version,
+        "model_name": model_name
+    }
 
 
 async def end_session(session_id: int) -> Optional[Dict]:
@@ -407,11 +415,17 @@ async def end_session(session_id: int) -> Optional[Dict]:
         )
         await db.commit()
 
+        mlops_ver = row["mlops_version"]
+        yolo_ver = row["yolo_version"]
+        model_name = f"{yolo_ver}_{mlops_ver}" if yolo_ver and mlops_ver else (yolo_ver or mlops_ver)
+
         return {
             "id": session_id,
             "started_at": row["started_at"],
             "ended_at": ended_at,
-            "model_name": row["model_name"]
+            "mlops_version": mlops_ver,
+            "yolo_version": yolo_ver,
+            "model_name": model_name
         }
 
 
@@ -425,8 +439,14 @@ async def get_sessions() -> List[Dict]:
             "SELECT * FROM sessions ORDER BY id DESC"
         )
         rows = await cursor.fetchall()
-
-        return [dict(row) for row in rows]
+        results = []
+        for row in rows:
+            d = dict(row)
+            mlops_ver = d.get("mlops_version")
+            yolo_ver = d.get("yolo_version")
+            d["model_name"] = f"{yolo_ver}_{mlops_ver}" if yolo_ver and mlops_ver else (yolo_ver or mlops_ver)
+            results.append(d)
+        return results
 
 
 async def get_session(session_id: int) -> Optional[Dict]:
@@ -442,7 +462,11 @@ async def get_session(session_id: int) -> Optional[Dict]:
         row = await cursor.fetchone()
 
         if row:
-            return dict(row)
+            d = dict(row)
+            mlops_ver = d.get("mlops_version")
+            yolo_ver = d.get("yolo_version")
+            d["model_name"] = f"{yolo_ver}_{mlops_ver}" if yolo_ver and mlops_ver else (yolo_ver or mlops_ver)
+            return d
         return None
 
 
@@ -935,7 +959,14 @@ async def get_feedback_queue(session_id: Optional[int] = None) -> List[Dict]:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(query, params)
         rows = await cursor.fetchall()
-        return [dict(row) for row in rows]
+        results = []
+        for row in rows:
+            d = dict(row)
+            mlops_ver = d.get("mlops_version")
+            yolo_ver = d.get("yolo_version")
+            d["model_name"] = f"{yolo_ver}_{mlops_ver}" if yolo_ver and mlops_ver else (yolo_ver or mlops_ver)
+            results.append(d)
+        return results
 
 async def resolve_feedback(feedback_id: int):
     """

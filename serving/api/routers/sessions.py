@@ -24,7 +24,9 @@ async def create_session(request: SessionCreateRequest = SessionCreateRequest())
     return SessionCreateResponse(
         id=session["id"],
         started_at=session["started_at"],
-        model_name=session["model_name"]
+        mlops_version=session["mlops_version"],
+        yolo_version=session["yolo_version"],
+        model_name=session.get("model_name")
     )
 
 
