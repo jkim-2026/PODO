@@ -34,9 +34,18 @@ async def init_db():
             CREATE TABLE IF NOT EXISTS sessions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 started_at TEXT NOT NULL,
-                ended_at TEXT
+                ended_at TEXT,
+                mlops_version TEXT,
+                yolo_version TEXT
             )
         """)
+
+        # 기존 sessions 테이블 마이그레이션 (필요시 컬럼 추가)
+        try:
+            await db.execute("ALTER TABLE sessions ADD COLUMN mlops_version TEXT")
+            await db.execute("ALTER TABLE sessions ADD COLUMN yolo_version TEXT")
+        except aiosqlite.OperationalError:
+            pass
 
         # 검사 로그 테이블 생성
         await db.execute("""
@@ -93,6 +102,12 @@ async def init_db():
             # 컬럼이 이미 존재하면 무시
             pass
 
+        # 기존 테이블에 camera_id 컬럼이 없으면 추가 (마이그레이션)
+        try:
+            await db.execute("ALTER TABLE inspection_logs ADD COLUMN camera_id TEXT DEFAULT 'cam_1'")
+        except Exception:
+            pass
+
         # 검증 완료 표시 컬럼 추가 (마이그레이션)
         try:
             await db.execute("ALTER TABLE inspection_logs ADD COLUMN is_verified BOOLEAN DEFAULT FALSE")
@@ -138,8 +153,8 @@ async def add_inspection_log(data: DetectRequest, image_path: Optional[str] = No
 
         cursor = await db.execute(
             """
-            INSERT INTO inspection_logs (timestamp, image_id, result, detections, image_path, session_id)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO inspection_logs (timestamp, image_id, result, detections, image_path, session_id, camera_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 data.timestamp,
@@ -147,7 +162,8 @@ async def add_inspection_log(data: DetectRequest, image_path: Optional[str] = No
                 result_status,
                 detections_json,
                 image_path,
-                data.session_id
+                data.session_id,
+                data.camera_id or "cam_1"
             )
         )
         await db.commit()
@@ -155,21 +171,30 @@ async def add_inspection_log(data: DetectRequest, image_path: Optional[str] = No
         return [cursor.lastrowid]
 
 
-async def get_stats(session_id: Optional[int] = None) -> StatsResponse:
+async def get_stats(session_id: Optional[int] = None, camera_id: Optional[str] = None) -> StatsResponse:
     """
     Calculate statistics from the logs.
     Now requires parsing 'detections' column to count total defects.
     session_id가 제공되면 해당 세션의 통계만 반환.
+    camera_id가 제공되면 해당 카메라의 통계만 반환.
     """
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
 
-        # 세션 필터 조건
-        session_filter = ""
-        session_params = ()
+        # 필터 조건 동적 구성
+        conditions = []
+        params = []
         if session_id is not None:
-            session_filter = " WHERE session_id = ?"
-            session_params = (session_id,)
+            conditions.append("session_id = ?")
+            params.append(session_id)
+        if camera_id is not None:
+            conditions.append("camera_id = ?")
+            params.append(camera_id)
+
+        session_filter = ""
+        if conditions:
+            session_filter = " WHERE " + " AND ".join(conditions)
+        session_params = tuple(params)
 
         # 1. Total Inspections (Total Rows)
         cursor = await db.execute(
@@ -192,8 +217,9 @@ async def get_stats(session_id: Optional[int] = None) -> StatsResponse:
             )
 
         # 2. Defect Items (Rows where result='defect')
-        defect_filter = " WHERE result='defect'" if not session_filter else " WHERE result='defect' AND session_id = ?"
-        defect_params = () if not session_filter else (session_id,)
+        defect_conditions = ["result='defect'"] + conditions[:]
+        defect_filter = " WHERE " + " AND ".join(defect_conditions)
+        defect_params = session_params
         cursor = await db.execute(
             f"SELECT COUNT(*) as cnt FROM inspection_logs{defect_filter}",
             defect_params
@@ -239,7 +265,8 @@ async def get_stats(session_id: Optional[int] = None) -> StatsResponse:
                 result=row["result"],
                 detections=json.loads(row["detections"]) if row["detections"] else [],
                 image_path=row["image_path"],
-                session_id=row["session_id"]
+                session_id=row["session_id"],
+                camera_id=row["camera_id"]
             )
 
         return StatsResponse(
@@ -254,24 +281,31 @@ async def get_stats(session_id: Optional[int] = None) -> StatsResponse:
         )
 
 
-async def get_recent_logs(limit: int = 10, session_id: Optional[int] = None) -> List[Dict]:
+async def get_recent_logs(limit: int = 10, session_id: Optional[int] = None, camera_id: Optional[str] = None) -> List[Dict]:
     """
     Returns the N most recent logs.
     session_id가 제공되면 해당 세션의 로그만 반환.
+    camera_id가 제공되면 해당 카메라의 로그만 반환.
     """
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
 
+        conditions = []
+        params = []
         if session_id is not None:
-            cursor = await db.execute(
-                "SELECT * FROM inspection_logs WHERE session_id = ? ORDER BY id DESC LIMIT ?",
-                (session_id, limit)
-            )
-        else:
-            cursor = await db.execute(
-                "SELECT * FROM inspection_logs ORDER BY id DESC LIMIT ?",
-                (limit,)
-            )
+            conditions.append("session_id = ?")
+            params.append(session_id)
+        if camera_id is not None:
+            conditions.append("camera_id = ?")
+            params.append(camera_id)
+
+        query = "SELECT * FROM inspection_logs"
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+        query += " ORDER BY id DESC LIMIT ?"
+        params.append(limit)
+
+        cursor = await db.execute(query, tuple(params))
         rows = await cursor.fetchall()
 
         result = []
@@ -286,23 +320,26 @@ async def get_recent_logs(limit: int = 10, session_id: Optional[int] = None) -> 
         return result
 
 
-async def get_defect_logs(session_id: Optional[int] = None) -> List[Dict]:
+async def get_defect_logs(session_id: Optional[int] = None, camera_id: Optional[str] = None) -> List[Dict]:
     """
     Returns all logs that are defects.
     session_id가 제공되면 해당 세션의 결함 로그만 반환.
+    camera_id가 제공되면 해당 카메라의 결함 로그만 반환.
     """
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
 
+        conditions = ["result = 'defect'"]
+        params = []
         if session_id is not None:
-            cursor = await db.execute(
-                "SELECT * FROM inspection_logs WHERE result = 'defect' AND session_id = ? ORDER BY id DESC",
-                (session_id,)
-            )
-        else:
-            cursor = await db.execute(
-                "SELECT * FROM inspection_logs WHERE result = 'defect' ORDER BY id DESC"
-            )
+            conditions.append("session_id = ?")
+            params.append(session_id)
+        if camera_id is not None:
+            conditions.append("camera_id = ?")
+            params.append(camera_id)
+
+        query = "SELECT * FROM inspection_logs WHERE " + " AND ".join(conditions) + " ORDER BY id DESC"
+        cursor = await db.execute(query, tuple(params))
         rows = await cursor.fetchall()
 
         result = []
@@ -319,7 +356,7 @@ async def get_defect_logs(session_id: Optional[int] = None) -> List[Dict]:
 
 # ===== 세션 관리 함수 =====
 
-async def create_session() -> Dict:
+async def create_session(model_name: Optional[str] = None) -> Dict:
     """
     새 세션을 생성하고 ID와 시작 시간을 반환.
     """
@@ -328,13 +365,13 @@ async def create_session() -> Dict:
 
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
-            "INSERT INTO sessions (started_at) VALUES (?)",
-            (started_at,)
+            "INSERT INTO sessions (started_at, model_name) VALUES (?, ?)",
+            (started_at, model_name)
         )
         await db.commit()
         session_id = cursor.lastrowid
 
-    return {"id": session_id, "started_at": started_at, "ended_at": None}
+    return {"id": session_id, "started_at": started_at, "ended_at": None, "model_name": model_name}
 
 
 async def end_session(session_id: int) -> Optional[Dict]:
@@ -366,7 +403,8 @@ async def end_session(session_id: int) -> Optional[Dict]:
         return {
             "id": session_id,
             "started_at": row["started_at"],
-            "ended_at": ended_at
+            "ended_at": ended_at,
+            "model_name": row["model_name"]
         }
 
 
@@ -768,6 +806,11 @@ async def get_health(session_id: Optional[str]) -> HealthResponse:
             # 기존에는 < 80%를 저신뢰도로 정의했으므로 mid + low를 사용
             low_ratio = ((dist.mid + dist.low) / total_detections) * 100
 
+    # 활성 모델 버전 추출 (session_info가 존재할 경우)
+    active_model = None
+    if session_info:
+        active_model = session_info.get("model_name")
+
     return HealthResponse(
         status=status,
         timestamp=datetime.now(KST).isoformat(),
@@ -781,7 +824,8 @@ async def get_health(session_id: Optional[str]) -> HealthResponse:
         low_confidence_ratio=round(low_ratio, 2),
         defect_confidence_stats=defect_confidence_stats,
         defect_type_stats=defect_type_stats,
-        alerts=alerts
+        alerts=alerts,
+        active_model=active_model
     )
 
 

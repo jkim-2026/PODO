@@ -38,6 +38,7 @@ class DetectRequest(BaseModel):
     image: Optional[str] = Field(None, description="Base64 encoded image string (optional)")
     detections: List[Detection] = Field(default_factory=list, description="결함 목록 (빈 배열 = 정상)")
     session_id: Optional[int] = Field(None, description="세션 ID (optional)")
+    camera_id: Optional[str] = Field(None, description="카메라 ID (예: cam_1, cam_2)")
 
 
 # --- Response Models ---
@@ -65,6 +66,7 @@ class InspectionLogResponse(BaseModel):
     detections: List[Detection] = Field(default_factory=list, description="List of detected defects")
     image_path: Optional[str] = Field(None, description="Path to saved image file")
     session_id: Optional[int] = Field(None, description="세션 ID")
+    camera_id: Optional[str] = Field(None, description="카메라 ID")
     # 기존 confidence, defect_type, bbox 필드는 detections 리스트 안에 포함됨
 
 
@@ -84,6 +86,13 @@ class StatsResponse(BaseModel):
 
 # ===== 세션 관련 스키마 =====
 
+class SessionCreateRequest(BaseModel):
+    """
+    세션 생성 요청
+    """
+    model_name: Optional[str] = Field(None, description="현재 사용 모델 파일명 (예: yolov11m_v2)")
+
+
 class SessionResponse(BaseModel):
     """
     세션 정보 응답
@@ -91,6 +100,7 @@ class SessionResponse(BaseModel):
     id: int = Field(..., description="세션 ID")
     started_at: str = Field(..., description="세션 시작 시간 (ISO 8601)")
     ended_at: Optional[str] = Field(None, description="세션 종료 시간 (ISO 8601)")
+    model_name: Optional[str] = Field(None, description="사용 모델명")
 
 
 class SessionCreateResponse(BaseModel):
@@ -99,6 +109,7 @@ class SessionCreateResponse(BaseModel):
     """
     id: int = Field(..., description="생성된 세션 ID")
     started_at: str = Field(..., description="세션 시작 시간 (ISO 8601)")
+    model_name: Optional[str] = Field(None, description="사용 모델명")
 
 
 class SessionListResponse(BaseModel):
@@ -177,6 +188,7 @@ class HealthResponse(BaseModel):
     defect_confidence_stats: Optional[DefectConfidenceStats] = Field(None, description="결함 신뢰도 통계")
     defect_type_stats: List[DefectTypeStat] = Field(default_factory=list, description="결함 타입별 통계")
     alerts: List[AlertInfo] = Field(default_factory=list, description="알림 목록")
+    active_model: Optional[str] = Field(None, description="현재 활성화된 모델 버전")
 
 
 class AlertsResponse(BaseModel):
@@ -189,6 +201,7 @@ class AlertsResponse(BaseModel):
     session_info: SessionInfo = Field(..., description="세션 정보")
     alerts: List[AlertInfo] = Field(default_factory=list, description="알림 목록")
     summary: dict = Field(..., description="간단한 요약 (defect_rate, avg_confidence)")
+    active_model: Optional[str] = Field(None, description="현재 활성화된 모델 버전")
 
 
 # ===== 피드백 관련 스키마 (Bulk 전용) =====

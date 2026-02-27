@@ -56,5 +56,6 @@ async def get_alerts(
         "summary": {
             "defect_rate": health_data.defect_rate,
             "avg_confidence": avg_confidence
-        }
+        },
+        "active_model": health_data.active_model
     }

@@ -171,7 +171,14 @@ Coded by www.creative-tim.com
               <li class="nav-item d-flex align-items-center mr-3">
                 <div id="alert-banner-container"></div>
               </li>
-              <li class="nav-item">
+              <li class="nav-item" style="margin-left: 8px;">
+                <div class="form-group mb-0" style="margin-top: 8px;">
+                  <select class="form-control" id="camera-select" style="width: 160px; height: 38px;">
+                    <option value="">All Cameras (전체)</option>
+                  </select>
+                </div>
+              </li>
+              <li class="nav-item" style="margin-left: 8px;">
                 <div class="form-group mb-0" style="margin-top: 8px;">
                   <select class="form-control" id="session-select" style="width: 250px; height: 38px;">
                     <option value="">All Sessions (전체)</option>
@@ -460,7 +467,10 @@ Coded by www.creative-tim.com
 
       // Simulation / API Polling Logic
       // 배포 시 (프록시 사용): "/api"
-      const API_BASE_URL = "/api";
+      // Use local backend if running on localhost, otherwise use proxy
+      const API_BASE_URL = (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
+        ? "http://localhost:8080"
+        : "/api";
 
       // Start polling automatically
       // Start polling automatically
@@ -527,6 +537,24 @@ Coded by www.creative-tim.com
           }
           fetchLogs(); // Refetch immediately
         });
+
+        // Camera Change Event
+        const cameraSelector = document.getElementById("camera-select");
+        if (cameraSelector) {
+          const savedCamera = localStorage.getItem("dashboard_selected_camera");
+          if (savedCamera) {
+            cameraSelector.value = savedCamera;
+          }
+          cameraSelector.addEventListener("change", (e) => {
+            const val = e.target.value;
+            if (val) {
+              localStorage.setItem("dashboard_selected_camera", val);
+            } else {
+              localStorage.removeItem("dashboard_selected_camera");
+            }
+            fetchLogs();
+          });
+        }
       }
 
       async function fetchLogs() {
@@ -538,12 +566,33 @@ Coded by www.creative-tim.com
           if (sessionId) {
             url += `&session_id=${sessionId}`;
           }
+          const cameraSelector = document.getElementById("camera-select");
+          const cameraId = cameraSelector ? cameraSelector.value : "";
+          if (cameraId) {
+            url += `&camera_id=${encodeURIComponent(cameraId)}`;
+          }
 
           const response = await fetch(url);
           if (!response.ok) throw new Error('API Network response was not ok');
 
           const data = await response.json();
           if (!data) return;
+          // Populate camera dropdown with unique camera_ids from fetched data
+          const cameraSelectEl = document.getElementById("camera-select");
+          if (cameraSelectEl) {
+            const existingCameraIds = new Set(
+              Array.from(cameraSelectEl.options).map(o => o.value).filter(v => v !== "")
+            );
+            data.forEach(record => {
+              if (record.camera_id && !existingCameraIds.has(record.camera_id)) {
+                existingCameraIds.add(record.camera_id);
+                const opt = document.createElement("option");
+                opt.value = record.camera_id;
+                opt.textContent = record.camera_id;
+                cameraSelectEl.appendChild(opt);
+              }
+            });
+          }
 
           // Group by image_id
           const groupedMap = new Map();
@@ -557,7 +606,13 @@ Coded by www.creative-tim.com
               // Construct Image URL
               let imageUrl = '../assets/img/logo-small.png';
               if (record.image_path) {
-                imageUrl = `${API_BASE_URL}/${record.image_path.replace(/\\/g, '/')}`;
+                if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+                  // Local testing: Look for dummy images in the dashboard assets folder
+                  const filename = record.image_path.split(/[\\/]/).pop();
+                  imageUrl = `../assets/img/defects/${filename}`;
+                } else {
+                  imageUrl = `${API_BASE_URL}/${record.image_path.replace(/\\/g, '/')}`;
+                }
               }
 
               groupedMap.set(record.image_id, {

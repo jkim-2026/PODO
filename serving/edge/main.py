@@ -6,10 +6,13 @@ RTSP 영상을 수신하고, PCB를 감지/크롭하여 추론 및 업로드 수
 
 import argparse
 import os
+# Jetson: TensorRT는 시스템 패키지이므로 pip 자동 설치 방지
+# os.environ["YOLO_AUTOINSTALL"] = "false"
 import queue
 import signal
 import sys
 import time
+import subprocess
 from datetime import datetime
 
 import cv2
@@ -22,17 +25,42 @@ from inference_worker import InferenceWorker
 from upload_worker import UploadWorker
 
 
-def start_session(session_url: str) -> int:
+
+
+def get_current_model_version() -> str:
+    """
+    현재 모델 버전(model_name)을 반환.
+    current_version.json 파일이 있으면 해당 버전을, 없으면 기본값 반환.
+    """
+    version_file = os.path.join(os.path.dirname(config.MODEL_PATH), "current_version.json")
+    model_name = "yolov11m_v0"
+    
+    if os.path.exists(version_file):
+        try:
+            import json
+            with open(version_file, 'r') as f:
+                v_info = json.load(f)
+                model_name = v_info.get("model_name", "yolov11m_v0")
+        except Exception as e:
+            print(f"[Main] 모델 버전 파일 읽기 에러: {e}")
+            
+    return model_name
+
+
+def start_session(session_url: str, model_name: str = None) -> int:
     """
     백엔드에 세션 시작을 요청하고 세션 ID를 반환.
     실패 시 None 반환.
     """
     try:
-        response = requests.post(session_url, timeout=5.0)
+        payload = {
+            "model_name": model_name
+        }
+        response = requests.post(session_url, json=payload, timeout=5.0)
         if response.status_code == 201:
             data = response.json()
             session_id = data.get("id")
-            print(f"[Main] 세션 시작: ID={session_id}")
+            print(f"[Main] 세션 시작: ID={session_id}, 모델명={model_name}")
             return session_id
         else:
             print(f"[Main] 세션 시작 실패: HTTP {response.status_code}")
@@ -108,16 +136,40 @@ def main():
         help="세션 관리 비활성화"
     )
     parser.add_argument(
+        "--no-updater",
+        action="store_true",
+        help="업데이트 프로세스(updater.py) 자동 실행 비활성화"
+    )
+    parser.add_argument(
         "--max-crops",
         type=int,
         default=0,
         help="최대 크롭 개수 (0=무제한)"
     )
+    parser.add_argument(
+        "--num-cameras", "-n",
+        type=int,
+        default=1,
+        help="사용할 카메라 대수 (기본값: 1)"
+    )
     
     args = parser.parse_args()
 
+    # 입력 소스 처리
+    # 카메라 수(num_cameras) 만큼의 URL을 생성합니다. 기본 RTSP 주소에
+    # "_1", "_2" ... 번호를 덧붙이는 방식이며, 파일(확장자 .mp4/.avi/.mkv)인
+    # 경우에는 번호 없이 동일 파일을 반복합니다.
+    if args.num_cameras >= 1:
+        base_url = args.input
+        if not any(base_url.lower().endswith(ext) for ext in ['.mp4', '.avi', '.mkv']):
+            input_sources = [f"{base_url}_{i+1}" for i in range(args.num_cameras)]
+        else:
+            input_sources = [base_url] * args.num_cameras
+    else:
+        # num_cameras 가 0 이면 comma-separated list를 그대로 사용
+        input_sources = [s.strip() for s in args.input.split(',')]
+
     # 동적 설정 업데이트 (CLI 인자 우선)
-    config.RTSP_URL = args.input
     config.API_URL = args.api_url
     config.MODEL_PATH = args.model
 
@@ -129,10 +181,11 @@ def main():
     # 세션 시작
     session_id = None
     if not args.no_session:
-        session_id = start_session(args.session_url)
+        model_version = get_current_model_version()
+        session_id = start_session(args.session_url, model_name=model_version)
 
     # Queue 생성
-    frame_queue = queue.Queue(maxsize=config.FRAME_QUEUE_SIZE)
+    frame_queue = queue.Queue(maxsize=config.FRAME_QUEUE_SIZE * len(input_sources))
     crop_queue = queue.Queue(maxsize=config.CROP_QUEUE_SIZE)
     upload_queue = queue.Queue(maxsize=config.UPLOAD_QUEUE_SIZE)
 
@@ -143,29 +196,36 @@ def main():
     # 2. 추론 워커 초기화
     print(f"[Main] 추론 워커 초기화 중 (모델: {config.MODEL_PATH})...")
     try:
-        inference_worker = InferenceWorker(crop_queue, upload_queue, config.MODEL_PATH, session_id=session_id)
+        inference_worker = InferenceWorker(crop_queue, upload_queue, config.MODEL_PATH, 
+                                           session_id=session_id, session_url=args.session_url if not args.no_session else None)
     except Exception as e:
         print(f"[Main] 추론 워커 초기화 실패: {e}")
         if session_id:
             end_session(args.session_url, session_id)
         sys.exit(1)
 
-    # 3. RTSP 수신 스레드 시작
-    receiver = RTSPReceiver(config.RTSP_URL, frame_queue, loop=args.loop)
-    receiver.start()
+    # 3. RTSP 수신 스레드 리스트 시작
+    receivers = []
+    for i, source in enumerate(input_sources):
+        camera_id = f"cam_{i+1}"
+        receiver = RTSPReceiver(source, frame_queue, camera_id=camera_id, loop=args.loop)
+        receiver.start()
+        receivers.append(receiver)
 
     # 연결 대기 (최대 10초)
-    print("[Main] RTSP 연결 대기 중...")
-    for _ in range(100):
-        if receiver.is_running():
+    print(f"[Main] {len(receivers)}개 RTSP 연결 대기 중...")
+    start_wait = time.time()
+    while time.time() - start_wait < 10:
+        if all(r.is_running() for r in receivers):
             break
-        if not receiver.is_alive():
-            print("[Main] 수신 스레드 시작 실패")
-            sys.exit(1)
         time.sleep(0.1)
     
     # 4. 추론 워커 가동
     inference_worker.start()
+
+    # 5. 백그라운드 업데이터 프로세스는 main이 직접 실행하지 않습니다.
+    #    외부에서 updater.py를 별도 서비스/스크립트로 구동하세요.
+    updater_process = None
 
     # 전처리기 초기화
     preprocessor = PCBPreprocessor(config.BACKGROUND_PATH)
@@ -181,7 +241,9 @@ def main():
     signal.signal(signal.SIGTERM, signal_handler)
 
     print("[Main] 파이프라인 가동 시작")
-    print(f"  - 입력: {config.RTSP_URL}")
+    print(f"  - 입력 소스: {len(input_sources)}개")
+    for r in receivers:
+        print(f"    * [{r.camera_id}] {r.source}")
     print(f"  - API: {config.API_URL}")
     print(f"  - 모델: {config.MODEL_PATH}")
     print(f"  - 세션 ID: {session_id if session_id else '없음'}")
@@ -193,10 +255,14 @@ def main():
     try:
         while not shutdown_flag:
             try:
-                frame = frame_queue.get(timeout=1.0)
+                # 큐에서 (camera_id, frame) 튜플을 가져옴
+                camera_id, frame = frame_queue.get(timeout=1.0)
             except queue.Empty:
-                if not receiver.is_running():
-                    break
+                if all(not r.is_running() for r in receivers):
+                    # 모든 수신기가 오프라인이더라도 메인 프로세스는 종료하지 않고
+                    # 재접속을 기다립니다. (RTSPReceiver가 재접속을 시도함)
+                    time.sleep(1)
+                    continue
                 continue
 
             frame_count += 1
@@ -204,14 +270,14 @@ def main():
 
             if cropped is not None:
                 crop_count += 1
-                print(f"[Main] [#{crop_count}] PCB 포착! ({cropped.shape[1]}x{cropped.shape[0]})")
+                print(f"[Main][{camera_id}] [#{crop_count}] PCB 포착! ({cropped.shape[1]}x{cropped.shape[0]})")
 
                 try:
-                    crop_queue.put_nowait(cropped)
+                    crop_queue.put_nowait((camera_id, cropped))
                 except queue.Full:
                     try:
                         crop_queue.get_nowait()
-                        crop_queue.put_nowait(cropped)
+                        crop_queue.put_nowait((camera_id, cropped))
                     except queue.Empty:
                         pass
 
@@ -223,13 +289,19 @@ def main():
 
     except Exception as e:
         print(f"[Main] 실행 중 오류 발생: {e}")
+        import traceback
+        traceback.print_exc()
     finally:
         print("[Main] 리소스 정리 중...")
-        receiver.stop()
+        
+        # 모든 워커 정지
+        for r in receivers:
+            r.stop()
         inference_worker.stop()
         upload_worker.stop()
 
-        receiver.join(timeout=2.0)
+        for r in receivers:
+            r.join(timeout=2.0)
         inference_worker.join(timeout=2.0)
         upload_worker.join(timeout=2.0)
 
@@ -240,11 +312,10 @@ def main():
         fps = frame_count / elapsed if elapsed > 0 else 0
 
         print("\n[Main] === 최종 통계 ===")
-        print(f"  처리 프레임: {frame_count}")
-        print(f"  포착된 PCB: {crop_count}")
-        print(f"  실행 시간: {elapsed:.1f}초")
-        print(f"  평균 성능: {fps:.1f} FPS")
-        print(f"  수신 상태: {receiver.get_stats()}")
+        print(f"  처리 프레임: {frame_count}, 포착 PCB: {crop_count}, 실행 시간: {elapsed:.1f}s, 평균 FPS: {fps:.1f}")
+        if receivers:
+            stats = ", ".join(f"{r.camera_id}:{r.get_stats()['frame_count']}f/{r.get_stats()['drop_count']}d" for r in receivers)
+            print(f"  카메라 통계 ({len(receivers)}): {stats}")
         print(f"  세션 ID: {session_id if session_id else '없음'}")
 
 

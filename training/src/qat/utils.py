@@ -1,5 +1,5 @@
 """
-QAT Utilities using NVIDIA pytorch-quantization toolkit.
+NVIDIA pytorch-quantization 툴킷을 활용하는 QAT 전용 유틸리티 모듈입니다.
 """
 
 import torch
@@ -7,24 +7,24 @@ import torch.nn as nn
 from typing import Optional, Dict, Any, List
 from tqdm import tqdm
 
-# Import Native Modules to avoid isinstance check failure after monkey-patching
+# 런타임에 이뤄지는 몽키 패치(Monkey-patching) 이후 isinstance 검사 실패를 방지하기 위해 네이티브 모듈을 직접 임포트합니다.
 from torch.nn import Conv2d as NativeConv2d
 from torch.nn import Linear as NativeLinear
 
 def initialize_quantization(config: Dict[str, Any]) -> None:
-    """Initialize pytorch-quantization library and set default descriptors."""
+    """pytorch-quantization 라이브러리를 초기화하고 기본 디스크립터(Descriptor)를 설정합니다."""
     try:
         from pytorch_quantization import quant_modules
         from pytorch_quantization.tensor_quant import QuantDescriptor
         from pytorch_quantization import nn as quant_nn
     except ImportError:
-        raise ImportError("pytorch-quantization not installed.")
+        raise ImportError("pytorch-quantization 라이브러리가 설치되지 않았습니다.")
 
-    # Suppress verbose logs from pytorch-quantization
+    # pytorch-quantization에서 발생하는 불필요한 로그(verbose logs)를 억제합니다.
     import logging
     logging.getLogger("pytorch_quantization.nn.modules.tensor_quantizer").setLevel(logging.ERROR)
     
-    # Also suppress absl logging if possible (common in google-based libs)
+    # 가능한 경우 absl 로깅 또한 억제합니다 (Google 기반 라이브러리에서 흔히 발생함).
     try:
         from absl import logging as absl_logging
         absl_logging.set_verbosity(absl_logging.ERROR)
@@ -41,7 +41,7 @@ def initialize_quantization(config: Dict[str, Any]) -> None:
     weight_per_channel = quant_config.get('weight_per_channel', True)
     calib_method = calibration_config.get('method', 'mse')
 
-    symmetric = quant_config.get('symmetric', True) # Default to True (TensorRT safe)
+    symmetric = quant_config.get('symmetric', True) # 기본값 True (TensorRT와 호환성 유지)
 
     if calib_method in ['mse', 'entropy', 'histogram']:
         input_desc = QuantDescriptor(num_bits=num_bits, calib_method='histogram')
@@ -50,10 +50,10 @@ def initialize_quantization(config: Dict[str, Any]) -> None:
 
     if weight_per_channel:
         if symmetric:
-            # [CRITICAL] TensorRT requires Symmetric Quantization (Zero Point = 0)
+            # [핵심] TensorRT는 대칭 양자화(Symmetric Quantization, Zero Point가 0)를 권장/요구합니다.
             weight_desc = QuantDescriptor(num_bits=num_bits, axis=(0,), unsigned=False, narrow_range=True)
         else:
-            # Asymmetric (PyTorch Default) - Risk of TensorRT mismatch
+            # 비대칭 양자화 (PyTorch 기본 설정) - TensorRT 변환 시 불일치(Mismatch) 위험이 존재합니다.
             weight_desc = QuantDescriptor(num_bits=num_bits, axis=(0,))
     else:
         if symmetric:
@@ -66,32 +66,32 @@ def initialize_quantization(config: Dict[str, Any]) -> None:
     quant_nn.QuantLinear.set_default_quant_desc_input(input_desc)
     quant_nn.QuantLinear.set_default_quant_desc_weight(weight_desc)
 
-    print(f"✅ QAT Initialized: Bits={num_bits}, WeightPerChannel={weight_per_channel}, Calib={calib_method}")
-    print(f"   Symmetric Weights: {symmetric} (TensorRT Compatible: {'YES' if symmetric else 'NO'})")
+    print(f"✅ QAT 초기화 완료: Bits={num_bits}, 채널별 가중치(WeightPerChannel)={weight_per_channel}, 보정기법(Calib)={calib_method}")
+    print(f"   대칭 가중치(Symmetric Weights) 사용: {symmetric} (TensorRT 호환성: {'강력함(YES)' if symmetric else '보장안됨(NO)'})")
 
 def replace_with_quantization_modules(model: nn.Module) -> None:
     """
-    Manually replace nn.Conv2d and nn.Linear with QuantConv2d and QuantLinear.
-    Robustly handles nn.Sequential, nn.ModuleList, and nested structures.
-    Uses NativeConv2d to correctly identify layers even after monkey-patching.
+    기존 레이어(nn.Conv2d, nn.Linear)를 양자화 레이어(QuantConv2d, QuantLinear)로 직접 교체합니다.
+    nn.Sequential, nn.ModuleList 및 중첩 구조까지 재귀적으로 처리하여 누락을 방지합니다.
+    몽키 패치 이후에도 정확한 레이어 식별을 위해 NativeConv2d를 사용합니다.
     """
     try:
         from pytorch_quantization import nn as quant_nn
     except ImportError:
         return
 
-    print("🔄 Manually replacing layers with Quantization modules (Deep Recursive)...")
+    print("🔄 수동으로 모델 레이어들을 양자화 모듈로 교체하고 있습니다 (심층 재귀 탐색)...")
     replaced_count = 0
     
     def _replace(module):
         nonlocal replaced_count
         
-        # 1. Handle Sequential / ModuleList by iterating indices
+        # 1. Sequential / ModuleList 컨테이너 처리 (인덱스를 통한 접근)
         if isinstance(module, (nn.Sequential, nn.ModuleList)):
             for i in range(len(module)):
                 child = module[i]
                 
-                # Check using Native classes because nn.Conv2d might be monkey-patched already
+                # 가로채기(Monkey-patch)로 인해 nn.Conv2d가 변조되었을 수 있으므로 Native 클래스로 확인합니다.
                 if isinstance(child, NativeConv2d) and not isinstance(child, quant_nn.QuantConv2d):
                     new_module = quant_nn.QuantConv2d(
                         child.in_channels, child.out_channels, child.kernel_size,
@@ -112,7 +112,7 @@ def replace_with_quantization_modules(model: nn.Module) -> None:
                     _replace(child)
             return
 
-        # 2. Handle standard Modules by iterating named_children
+        # 2. 일반 Module 객체들 처리 (named_children 순회 방식)
         for name, child in module.named_children():
             if isinstance(child, NativeConv2d) and not isinstance(child, quant_nn.QuantConv2d):
                 new_module = quant_nn.QuantConv2d(
@@ -134,22 +134,22 @@ def replace_with_quantization_modules(model: nn.Module) -> None:
                 _replace(child)
 
     _replace(model)
-    print(f"✅ Layer replacement complete. Replaced {replaced_count} layers.")
+    print(f"✅ 레이어 교체가 성공적으로 수행되었습니다. (교체된 총 개수: {replaced_count}개)")
 
 def disable_sensitive_layers_quantization(model: nn.Module) -> None:
-    """Disable quantization for sensitive layers like Detect head and Attention blocks."""
+    """Detect Head 계층이나 Attention 블록처럼 표현력이 중요한 민감 계층의 양자화를 우회시킵니다."""
     try:
         from pytorch_quantization import nn as quant_nn
     except ImportError:
         return
 
-    # Patterns that often cause TensorRT fusion errors or significant mAP drop
+    # TensorRT 변환 장애나 mAP의 치명적인 손실을 야기할 수 있는 패턴 목록입니다.
     sensitive_patterns = ['detect', 'head', 'attn']
     
-    print(f"🛡️  Disabling quantization for sensitive layers (Detect, Head, Attn)...")
+    print(f"🛡️  안정성 확보를 위해 일부 민감 레이어들의 양자화를 강제 비활성화합니다 (대상: Detect, Head, Attn)...")
     disabled_count = 0
     
-    # helper to disable a specific module
+    # 헬퍼 함수: 특정 단일 모듈을 비활성화
     def _disable_module(m):
         did_disable = False
         if isinstance(m, (quant_nn.QuantConv2d, quant_nn.QuantLinear)):
@@ -163,20 +163,21 @@ def disable_sensitive_layers_quantization(model: nn.Module) -> None:
         return did_disable
 
     for name, module in model.named_modules():
-        # 1. Check by Name
+        # 1. 이름 기반(Name) 패턴 매칭
         if any(p in name.lower() for p in sensitive_patterns):
              if _disable_module(module): disabled_count += 1
              
-        # 2. Check by Class Type (Crucial for YOLO Sequential models where name is just "23")
-        # Check for Ultralytics Detect/Segment/Pose/Classify headers
+        # 2. 타입(Class Type) 기반 매칭
+        # 설계 구조 상 순차적(Sequential) 모델 레이어들의 이름이 단순 숫자("23")인 문제를 해결합니다.
+        # Ultralytics의 Detect/Segment/Pose/Classify 특수 헤더 구별에 치명적으로 작용합니다.
         class_name = module.__class__.__name__.lower()
         if class_name in ['detect', 'segment', 'pose', 'classify', 'head']:
-            print(f"   PLEASE NOTE: Found sensitive layer by type: {class_name} ({name})")
-            # Recursively disable all children
+            print(f"   알림: 이름이 아닌 '타입'을 기반으로 민감 계층을 탐지했습니다: {class_name} ({name})")
+            # 탐지된 헤더 계층 아래의 모든 자식 계층을 재귀적으로 비활성화합니다.
             for child in module.modules():
                 if _disable_module(child): disabled_count += 1
 
-    print(f"✅ Disabled quantization for {disabled_count} sensitive modules.")
+    print(f"✅ 총 {disabled_count}개의 민감 계층 모듈들을 양자화 대상에서 제외시켰습니다.")
 
 def collect_calibration_stats(
     model: nn.Module,
@@ -185,18 +186,18 @@ def collect_calibration_stats(
     calib_method: str = 'mse',
     device: str = 'cuda'
 ) -> None:
-    """Run calibration to collect activation statistics."""
+    """활성화 값(Activation)의 범주를 수집하기 위하여 모델 보정(Calibration)을 실행합니다."""
     try:
         from pytorch_quantization import nn as quant_nn
         from pytorch_quantization import calib
     except ImportError:
         return
 
-    print(f"📊 Starting Calibration ({calib_method} method, {num_batches} batches)...")
+    print(f"📊 보정(Calibration) 프로세스를 개시합니다... (기법: {calib_method}, 허용 배치 수: {num_batches})")
     model.eval()
     model.to(device)
 
-    # 1. Enable Calibration
+    # 1. 전역 보정 모드 켜기 (Enable Calibration)
     for name, module in model.named_modules():
         if isinstance(module, quant_nn.TensorQuantizer):
             if getattr(module, '_explicitly_disabled', False):
@@ -206,9 +207,9 @@ def collect_calibration_stats(
                 module.disable_quant()
                 module.enable_calib()
 
-    # 2. Feed Data
+    # 2. 데이터 유입 및 측정 시작
     with torch.no_grad():
-        for i, batch in enumerate(tqdm(data_loader, total=num_batches, desc="Calibrating")):
+        for i, batch in enumerate(tqdm(data_loader, total=num_batches, desc="최적 활성화 구간 보정 중")):
             if i >= num_batches:
                 break
             
@@ -222,8 +223,8 @@ def collect_calibration_stats(
             images = images.to(device).float() / 255.0
             model(images)
 
-    # 3. Disable Calibration & Compute Amax
-    print(f"📉 Computing optimal amax stats using {calib_method}...")
+    # 3. 보정 모드를 해제하고 측정된 Amax(최대절대값) 확정하기
+    print(f"📉 측정된 로그를 바탕으로 {calib_method} 방식에 따라 권장 Amax를 도출하고 계산합니다...")
     for name, module in model.named_modules():
         if isinstance(module, quant_nn.TensorQuantizer):
             if getattr(module, '_explicitly_disabled', False):
@@ -240,40 +241,40 @@ def collect_calibration_stats(
                 
                 module._calibrator = None
 
-    print("✅ Calibration Complete.")
+    print("✅ 모델 보정이 완료되었습니다.")
 
 def prepare_model_for_export(model: nn.Module) -> None:
-    """Force enable quantization and set use_fb_fake_quant for all quantizers."""
+    """양자화 모듈들을 활성화로 고정하고, 전체 Quantizer들이 ONNX로 Export 되도록 'use_fb_fake_quant' 플래그를 할당합니다."""
     try:
         from pytorch_quantization import nn as quant_nn
     except ImportError:
         return
 
-    print("🔧 Forcing ONNX Export Mode (enable_quant + use_fb_fake_quant)...")
+    print("🔧 ONNX 추출 모드를 고정합니다 (양자화 및 use_fb_fake_quant 활성화)...")
     
-    # [CRITICAL] Set globally for the class to ensure hooks are registered correctly
+    # [핵심] 훅(Hooks)이 올바르게 등록될 수 있도록 클래스 전역 스코프에 설정해야 합니다.
     quant_nn.TensorQuantizer.use_fb_fake_quant = True
     
     for name, module in model.named_modules():
         if isinstance(module, quant_nn.TensorQuantizer):
-            # Skip disabled modules (e.g. sensitive layers) to keep them pure FP32
+            # 사용자가 비활성화 설정한 계층(예: 민감 계층 Head 부분)은 순수 FP32를 유지해야 하므로 건너뜁니다.
             if getattr(module, '_explicitly_disabled', False):
                 continue
 
-            # [CRITICAL] Do NOT force enable_quant() here! 
-            # It overrides 'disable_sensitive_layers_quantization', causing uncalibrated heads to be quantized.
+            # [핵심] 여기서 강제로 enable_quant() 를 실행하면 안 됩니다!
+            # 이것은 'disable_sensitive_layers_quantization'의 조치를 무효화시키며, 
+            # 보정조차 안된 헤더 계층들이 엉터리로 양자화되는 결과를 초래합니다.
             # module.enable_quant() 
             
-            # Only set export flag
+            # 내보내기용 특수 플래그만 부여합니다.
             module.use_fb_fake_quant = True
             
-            # Check if amax exists; if not, assume it wasn't calibrated/quantized and keep as FP32
-            if not hasattr(module, '_amax') or module._amax is None:
-                 # Warning only, do not force
-                 # print(f"⚠️  Warning: {name}._amax is None. Keeping as FP32 (Skipping Quantization).")
-                 continue
+            # [버그 픽스] ONNX Export를 위해 _amax 값이 스칼라이거나 일관된 형태인지 검증합니다.
+            # 일부 Opset 13 환경에서는 amax가 특정하게 명시된 형태 외의 0차원 텐서일 경우 중단(Crash)이 발생합니다.
+            if module._amax.numel() == 1:
+                 module._amax.data = module._amax.data.reshape([])
             
-            # Only set export flag if valid amax exists
+            # 확증된 amax가 있는 경우에 한해서 내보내기 플래그 덧씌움
             module.use_fb_fake_quant = True
 
 
@@ -284,8 +285,8 @@ def get_calibration_dataloader(
     workers: int = 4
 ):
     """
-    Builds a PURE calibration dataloader with Augmentations DISABLED.
-    This is critical for accurate statistic collection (amax).
+    모든 데이터 증강(Augmentations) 기법들이 무효화(DISABLED)된 매우 정순한 모델 보정 전용 데이터 로더를 구축합니다.
+    이 조치는 Activation 구간 분석 및 Amax 수치 연산이 왜곡되지 않도록 하는데 있어 매우 중요합니다.
     """
     from ultralytics.data.utils import check_det_dataset
     from ultralytics.data.dataset import YOLODataset
@@ -293,23 +294,23 @@ def get_calibration_dataloader(
     from ultralytics.utils import DEFAULT_CFG
     from types import SimpleNamespace
     
-    # 1. Load Data Config
+    # 1. 데이터(yaml) 설정 가져오기
     data_cfg = check_det_dataset(data_yaml_path)
     train_path = data_cfg['train']
     if isinstance(train_path, list): train_path = train_path[0]
     
-    # 2. Build Dataset directly (Bypassing Trainer to avoid default augs)
-    # We use YOLODataset with augment=False
-    # [FIX] DEFAULT_CFG is already an IterableSimpleNamespace, so use it directly
+    # 2. 증강 없이 바로 Dataset 모델 생성 
+    # 기본 강제된 증강 기법을 회피하고자 모델 Trainer 캡슐화를 우회하여 직접 생성(YOLODataset)합니다.
+    # [수정안] DEFAULT_CFG는 이미 IterableSimpleNamespace의 파생이므로 바로 전달해도 됩니다.
     hyp_obj = DEFAULT_CFG
     
     dataset = YOLODataset(
         img_path=train_path,
         imgsz=imgsz,
         batch_size=batch_size,
-        augment=False,       # <--- CRITICAL: Disable Mosaic/Mixup
-        hyp=hyp_obj,         # <--- Fix: Pass object wrapper
-        rect=False,          # Standard square inference-like
+        augment=False,       # <--- 핵심 조치: Mosaic 및 Mixup 데이터 변형 증강 기법 원천봉쇄
+        hyp=hyp_obj,         # <--- 조치사항: 객체 래퍼 그대로 전달
+        rect=False,          # 추론 때의 직사각형이 아닌 표준 형태 유도
         cache=False,
         single_cls=False,
         stride=32,
@@ -318,13 +319,13 @@ def get_calibration_dataloader(
         classes=data_cfg['names']
     )
     
-    # 3. Build Loader
+    # 3. 로더 구축 (Builder)
     from torch.utils.data import DataLoader
-    # Use Ultralytics collate_fn
+    # Ultralytics의 원시 collate_fn을 활용합니다.
     loader = DataLoader(
         dataset,
         batch_size=batch_size,
-        shuffle=True,        # Shuffle is fine, but data itself is clean
+        shuffle=True,        # 데이터 구조 자체는 깨끗하므로 섞는 것은 무방합니다.
         num_workers=workers,
         collate_fn=getattr(dataset, 'collate_fn', None),
         pin_memory=True
