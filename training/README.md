@@ -122,32 +122,29 @@ mixup: 0.0                    # Mixup Prob
 
 본 Training 코드는 단발성 수동 학습에 그치지 않고, Apache Airflow(`dags/pcb_retrain.py`)에 의해 주기적으로 호출되어 **데이터 동기화부터 모델 변환 및 레지스트리 적재까지 전면 자동화**되어 있습니다. 
 
-### MLOps 실행 구조 (Airflow DAG 기준)
+### 🔄 MLOps 파이프라인 흐름 (Airflow DAG 기준)
 
-```mermaid
-sequenceDiagram
-    participant DAG as Airflow (Scheduler)
-    participant Sync as S3 Data Sync
-    participant Train as Training Engine
-    participant S3 as MLflow / S3 Registry
+1. **데이터 PULL Trigger (스케줄링 / 피드백)**
+   - 주기적인 스케줄이나 Edge에서 실패 사례(False Negative 등)가 충분히 누적될 시, Airflow가 **새로운 데이터셋을 동기화(S3 다운로드)하여 병합**합니다.
+   
+2. **자동 파인튜닝 (`run_exp.py`)** 
+   - 병합된 데이터셋 위에서 Base YOLO 모델이 성능 복구를 위한 학습을 먼저 수행합니다 (MLflow 자동 로깅).
 
-    DAG->>Sync: 1. 재학습 스케줄 트리거
-    Sync->>Sync: S3 최신 라벨링 데이터 검증 및 다운로드
-    
-    rect rgb(235, 245, 255)
-        Note right of DAG: 2. 자동 파인튜닝 (run_exp.py)
-        DAG->>Train: 모델 재학습 시작
-        Train-->>S3: 파라미터 & 메트릭 기록 등록
-    end
+3. **QAT 양자화 인지 학습 (`train_qat.py` & `recalibrate_ema.py`)**
+   - 배포를 위해 Base 모델의 가중치를 이어받아 **INT8 양자화 시뮬레이션(QAT)** 파인튜닝을 연속해서 수행합니다. 이후 통계 오차를 잡는 **재보정 로직**까지 한 번에 실행됩니다.
 
-    rect rgb(250, 245, 235)
-        Note right of DAG: 3. 배포(Edge)용 포맷 추출 (export_qat.py)
-        DAG->>Train: INT8 Engine 등 엣지 배포용 변환
-        Train-->>S3: 최신 Engine / ONNX 타겟 스토리지 업로드
-    end
-    
-    DAG->>DAG: 4. 파이프라인 버저닝 (vX) 완료
-```
+4. **Edge 맞춤형 포맷 강제 변환 (`export_qat.py`)**
+   - 학습이 끝난 QAT 모델을 현장 배포 하드웨어(Jetson 등) 전용인 `.engine` 또는 `.onnx` 포맷으로 텐서 변환합니다.
+
+5. **신규 버전 레지스트리 등록 및 라이프사이클 관리 (`register_model.py`)**
+   - 변환이 모두 끝난 가중치 파일들을 **MLflow Model Registry** 및 S3 버킷에 정식으로 올립니다.
+   - 이때 모델은 다음과 같은 상태(State)로 구분되어 버저닝 및 관리됩니다:
+     - **`Staging`**: 파인튜닝은 완료되었으나 아직 Edge에서 완벽히 검증되지 않은 후보 모델
+     - **`Production`**: 최종 성능 평가(Recall 등)를 통과하여 실제 Edge 디바이스로 배포가 승격된 상용 모델
+     - **`Archived`**: 새 Production 모델 배포로 인해 현역에서 물러난 구버전 모델 (만약 새 모델에 이슈가 생기면 롤백용 방어선 역할)
+
+6. **배포 완료 및 Hot-Swap 알림**
+   - Edge 디바이스로 새 버전이 나왔음을 알리면, Edge가 안전하게 추론 공백 없이 **무중단 교체(Hot-Swap)**를 진행합니다.
 
 ### Training 모듈 관점의 MLOps 이점
 
