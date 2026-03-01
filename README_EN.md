@@ -336,6 +336,3 @@ sudo systemctl start nginx
 
 ---
 
-## 📄 License
-
-This project was created as part of the Boostcamp AI Tech program by NAVER Connect Foundation.
