@@ -336,6 +336,3 @@ sudo systemctl start nginx
 
 ---
 
-## 📄 라이선스
-
-이 프로젝트는 부스트캠프 AI Tech 과정에서 제작되었습니다.
